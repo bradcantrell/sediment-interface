@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tidal Sediment — Prototype (flood/ebb + net drift)</title>
+<script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+<style>
+  html,body{margin:0;padding:0;background:#0b0e14;color:#cdd6e4;font-family:ui-monospace,Menlo,Consolas,monospace;}
+  #wrap{position:relative;width:100vw;height:100vh;}
+  canvas{display:block;}
+  #hud{position:absolute;top:12px;left:14px;font-size:13px;line-height:1.5;pointer-events:none;}
+  #hud .ph{color:#ffd166;font-weight:bold;}
+  #panel{position:absolute;right:12px;top:12px;width:220px;background:rgba(20,26,36,.82);border:1px solid #2a3444;border-radius:8px;padding:12px;font-size:12px;}
+  #panel label{display:block;margin:8px 0 2px;color:#8fa2bd;}
+  #panel input[type=range]{width:100%;}
+  #panel .val{float:right;color:#ffd166;}
+  #panel button{width:100%;margin-top:10px;padding:6px;background:#22304a;color:#cdd6e4;border:1px solid #3a4a66;border-radius:5px;cursor:pointer;}
+  #panel button.on{background:#7a4a12;border-color:#ffd166;color:#fff;}
+  #legend{position:absolute;left:14px;bottom:14px;font-size:11px;color:#8fa2bd;line-height:1.5;}
+  .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="hud"></div>
+  <div id="panel">
+    <label>TIDE AMPLITUDE <span class="val" id="vAmp"></span></label>
+    <input type="range" id="sAmp" min="0.5" max="5" step="0.1" value="2.2">
+    <label>TIDE PERIOD (frames) <span class="val" id="vPer"></span></label>
+    <input type="range" id="sPer" min="120" max="1200" step="30" value="360">
+    <label>RESIDUAL (net drift) <span class="val" id="vRes"></span></label>
+    <input type="range" id="sRes" min="-0.8" max="1.5" step="0.05" value="0.5">
+    <button id="bFlow" class="on">LIVE FLOW — on</button>
+    <button id="bNet" class="on">NET DRIFT — on</button>
+    <button id="bReset">RESET</button>
+  </div>
+  <div id="legend">
+    <span class="sw" style="background:#4cc9f0"></span>live flow (reverses)<br>
+    <span class="sw" style="background:#ffd166"></span>net drift (time-averaged)<br>
+    <span class="sw" style="background:#ff44aa"></span>sediment particles
+  </div>
+</div>
+<script>
+// ── TIDAL PROTOTYPE — fork of the sediment-interface Stam solver ──
+const NX = 120, NY = 68;
+const SIZE = (NX + 2) * (NY + 2);
+const DT = 0.08, VISC = 0.00005, GS_ITERS = 30;
+const PARTICLE_COUNT = 1800, MAX_AGE = 900;
+
+let u, v, uPrev, vPrev, pArr, divArr, solid;
+let uMean, vMean;
+let cellW, cellH;
+let particles = [];
+let simTime = 0;
+
+let tidalAmp = 2.2, tidalPeriod = 360, residual = 0.5;
+let showFlow = true, showNet = true;
+
+function IX(i, j) { return i + (NX + 2) * j; }
+
+function addSource(x, s) {
+  for (let j = 1; j <= NY; j++) for (let i = 1; i <= NX; i++) {
+    let idx = IX(i, j); if (solid[idx]) continue; x[idx] += DT * s[idx];
+  }
+}
+
+function setBnd(b, x) {
+  for (let j = 1; j <= NY; j++) { x[IX(0, j)] = x[IX(1, j)]; }   // left open
+  for (let j = 1; j <= NY; j++) { x[IX(NX+1, j)] = x[IX(NX, j)]; } // right open
+  for (let i = 1; i <= NX; i++) {
+    x[IX(i, 0)] = b === 2 ? -x[IX(i, 1)] : x[IX(i, 1)];
+    x[IX(i, NY+1)] = b === 2 ? -x[IX(i, NY)] : x[IX(i, NY)];
+  }
+  x[IX(0,0)] = 0.5*(x[IX(1,0)]+x[IX(0,1)]);
+  x[IX(0,NY+1)] = 0.5*(x[IX(1,NY+1)]+x[IX(0,NY)]);
+  x[IX(NX+1,0)] = 0.5*(x[IX(NX,0)]+x[IX(NX+1,1)]);
+  x[IX(NX+1,NY+1)] = 0.5*(x[IX(NX,NY+1)]+x[IX(NX+1,NY)]);
+}
+
+function linSolve(b, x, x0, a, c) {
+  for (let iter = 0; iter < GS_ITERS; iter++) {
+    for (let j = 1; j <= NY; j++) for (let i = 1; i <= NX; i++) {
+      let idx = IX(i, j); if (solid[idx]) continue;
+      let l = solid[IX(i-1,j)] ? x[idx] : x[IX(i-1,j)];
+      let r = solid[IX(i+1,j)] ? x[idx] : x[IX(i+1,j)];
+      let b2 = solid[IX(i,j-1)] ? x[idx] : x[IX(i,j-1)];
+      let t = solid[IX(i,j+1)] ? x[idx] : x[IX(i,j+1)];
+      x[idx] = (x0[idx] + a * (l + r + b2 + t)) / c;
+    }
+    setBnd(b, x);
+  }
+}
+
+function diffuse(b, x, x0, diff) { let a = DT * diff * NX * NY; linSolve(b, x, x0, a, 1 + 4*a); }
+
+function advect(b, d, d0, uVec, vVec) {
+  let dt0 = DT * NX;
+  for (let j = 1; j <= NY; j++) for (let i = 1; i <= NX; i++) {
+    let idx = IX(i, j); if (solid[idx]) { d[idx] = 0; continue; }
+    let x = i - dt0 * uVec[idx], y = j - dt0 * vVec[idx];
+    x = constrain(x, 0.5, NX + 0.5); y = constrain(y, 0.5, NY + 0.5);
+    let i0 = floor(x), i1 = i0+1, j0 = floor(y), j1 = j0+1;
+    if (solid[IX(i0,j0)]||solid[IX(i1,j0)]||solid[IX(i0,j1)]||solid[IX(i1,j1)]) { d[idx] = d0[idx]; continue; }
+    let sx = x - i0, sy = y - j0;
+    d[idx] = (1-sx)*(1-sy)*d0[IX(i0,j0)] + sx*(1-sy)*d0[IX(i1,j0)] + (1-sx)*sy*d0[IX(i0,j1)] + sx*sy*d0[IX(i1,j1)];
+  }
+  setBnd(b, d);
+}
+
+function project(uVec, vVec, pVec, dVec) {
+  for (let j = 1; j <= NY; j++) for (let i = 1; i <= NX; i++) {
+    let idx = IX(i, j); if (solid[idx]) { dVec[idx] = 0; pVec[idx] = 0; continue; }
+    let uR = solid[IX(i+1,j)]?0:uVec[IX(i+1,j)], uL = solid[IX(i-1,j)]?0:uVec[IX(i-1,j)];
+    let vT = solid[IX(i,j+1)]?0:vVec[IX(i,j+1)], vB = solid[IX(i,j-1)]?0:vVec[IX(i,j-1)];
+    dVec[idx] = -0.5*(uR-uL+vT-vB); pVec[idx] = 0;
+  }
+  setBnd(0, dVec); setBnd(0, pVec);
+  linSolve(0, pVec, dVec, 1, 4);
+  for (let j = 1; j <= NY; j++) for (let i = 1; i <= NX; i++) {
+    let idx = IX(i, j); if (solid[idx]) continue;
+    uVec[idx] -= 0.5*(pVec[IX(i+1,j)] - pVec[IX(i-1,j)]);
+    vVec[idx] -= 0.5*(pVec[IX(i,j+1)] - pVec[IX(i,j-1)]);
+  }
+  setBnd(1, uVec); setBnd(2, vVec);
+}
+
+function tidalVel() {
+  return tidalAmp * Math.sin(2 * Math.PI * simTime / tidalPeriod) + residual;
+}
+
+function velocityStep() {
+  let tv = tidalVel();
+  for (let j = 1; j <= NY; j++) {
+    let idx = IX(1, j);
+    if (!solid[idx]) {
+      let nz = (noise(j * 0.15, simTime * 0.01) - 0.5) * 0.3;
+      u[idx] = tv + nz;
+    }
+  }
+  diffuse(1, uPrev, u, VISC);
+  project(uPrev, vPrev, pArr, divArr);
+  advect(1, u, uPrev, uPrev, vPrev);
+  advect(2, v, vPrev, uPrev, vPrev);
+  project(u, v, pArr, divArr);
+  for (let k = 0; k < SIZE; k++) {
+    uMean[k] += (u[k] - uMean[k]) * 0.008;
+    vMean[k] += (v[k] - vMean[k]) * 0.008;
+  }
+}
+
+function getVelocityAt(px, py) {
+  let i = constrain(floor(px / cellW), 0, NX + 1);
+  let j = constrain(floor(py / cellH), 0, NY + 1);
+  let idx = IX(i, j);
+  return { vx: u[idx] * cellW, vy: v[idx] * cellH };
+}
+
+function spawnParticle() {
+  return { x: random(0, width), y: random(cellH, height - cellH), vx: 0, vy: 0, born: simTime - random(0, MAX_AGE) };
+}
+
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    let p = particles[i];
+    let vel = getVelocityAt(p.x, p.y);
+    p.vx += (vel.vx - p.vx) * 0.35;
+    p.vy += (vel.vy - p.vy) * 0.35;
+    let spd = Math.sqrt(vel.vx*vel.vx + vel.vy*vel.vy);
+    p.vx += (noise(p.x*0.02, p.y*0.02, simTime*0.05) - 0.5) * 0.12 * spd;
+    p.vy += (noise(p.x*0.02+50, p.y*0.02, simTime*0.05) - 0.5) * 0.12 * spd;
+    p.x += p.vx * DT * 4;
+    p.y += p.vy * DT * 4;
+    let age = simTime - p.born;
+    if (p.x < 0 || p.x > width || p.y < 0 || p.y > height || age > MAX_AGE) { particles.splice(i, 1); continue; }
+  }
+  while (particles.length < PARTICLE_COUNT) particles.push(spawnParticle());
+}
+
+function setup() {
+  let c = createCanvas(windowWidth, windowHeight);
+  c.parent('wrap');
+  cellW = width / (NX + 2);
+  cellH = height / (NY + 2);
+  u = new Float32Array(SIZE); v = new Float32Array(SIZE);
+  uPrev = new Float32Array(SIZE); vPrev = new Float32Array(SIZE);
+  pArr = new Float32Array(SIZE); divArr = new Float32Array(SIZE);
+  solid = new Uint8Array(SIZE);
+  uMean = new Float32Array(SIZE); vMean = new Float32Array(SIZE);
+  for (let i = 0; i < PARTICLE_COUNT; i++) particles.push(spawnParticle());
+  document.getElementById('sAmp').oninput = e => tidalAmp = +e.target.value;
+  document.getElementById('sPer').oninput = e => tidalPeriod = +e.target.value;
+  document.getElementById('sRes').oninput = e => residual = +e.target.value;
+  document.getElementById('bFlow').onclick = e => { showFlow = !showFlow; e.target.classList.toggle('on', showFlow); e.target.textContent = 'LIVE FLOW — ' + (showFlow?'on':'off'); };
+  document.getElementById('bNet').onclick = e => { showNet = !showNet; e.target.classList.toggle('on', showNet); e.target.textContent = 'NET DRIFT — ' + (showNet?'on':'off'); };
+  document.getElementById('bReset').onclick = () => { simTime = 0; uMean.fill(0); vMean.fill(0); };
+}
+
+function drawArrows(arr, step, len, r, g, b, alpha) {
+  push(); stroke(r, g, b, alpha); fill(r, g, b, alpha); strokeWeight(1);
+  for (let j = step; j <= NY; j += step) for (let i = step; i <= NX; i += step) {
+    let idx = IX(i, j); if (solid[idx]) continue;
+    let ux = arr === 'mean' ? uMean[idx] : u[idx];
+    let vy = arr === 'mean' ? vMean[idx] : v[idx];
+    let m = Math.sqrt(ux*ux + vy*vy);
+    if (m < 0.0005) continue;
+    let x = i * cellW, y = j * cellH;
+    let sx = ux / m, sy = vy / m;
+    let L = constrain(m * len, 2, step * cellW * 0.6);
+    line(x, y, x + sx * L, y + sy * L);
+    // arrowhead
+    let hx = x + sx * L, hy = y + sy * L;
+    let ax = -sy, ay = sx;
+    triangle(hx, hy, hx - sx*3 + ax*3, hy - sy*3 + ay*3, hx - sx*3 - ax*3, hy - sy*3 - ay*3);
+  }
+  pop();
+}
+
+function draw() {
+  simTime += 1;
+  velocityStep();
+  updateParticles();
+
+  background(11, 14, 20);
+
+  // tide gauge bar (bottom-left)
+  let tv = tidalVel();
+  push(); noStroke();
+  let gx = 16, gy = height - 40, gw = 180, gh = 12;
+  fill(40, 48, 62); rect(gx, gy, gw, gh);
+  let mid = gx + gw/2;
+  let bar = constrain(tv / tidalAmp, -1, 1);
+  if (bar >= 0) { fill(80, 160, 240); rect(mid, gy, bar * gw/2, gh); }
+  else { fill(230, 90, 90); rect(mid + bar*gw/2, gy, -bar*gw/2, gh); }
+  fill(255,255,255,60); rect(mid-1, gy, 2, gh);
+  pop();
+
+  if (showFlow) drawArrows('live', 5, 22, 76, 201, 240, 70);
+  if (showNet) drawArrows('mean', 5, 60, 255, 209, 102, 200);
+
+  // particles (slow pink -> fast blue-white)
+  noStroke();
+  for (let p of particles) {
+    let spd = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
+    let t = constrain(spd / 3.0, 0, 1);
+    let r = 255 - (255-70)*t, g = 68 + (180-68)*t, b = 170 + (230-170)*t;
+    fill(r, g, b, 200);
+    circle(p.x, p.y, 2.5);
+  }
+
+  // HUD
+  let phase = Math.sin(2*Math.PI*simTime/tidalPeriod);
+  let lbl = phase > 0.15 ? 'FLOOD  →' : (phase < -0.15 ? '←  EBB' : 'SLACK');
+  document.getElementById('hud').innerHTML =
+    't = ' + simTime + '<br>' +
+    '<span class="ph">' + lbl + '</span> &nbsp;tidal = ' + tv.toFixed(2) + '<br>' +
+    'residual = ' + residual.toFixed(2) + ' &nbsp;·&nbsp; particles = ' + particles.length;
+  document.getElementById('vAmp').textContent = tidalAmp.toFixed(1);
+  document.getElementById('vPer').textContent = tidalPeriod;
+  document.getElementById('vRes').textContent = residual.toFixed(2);
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  cellW = width / (NX + 2); cellH = height / (NY + 2);
+}
+</script>
+</body>
+</html>
