@@ -203,14 +203,14 @@ function paintBed(raise) {
 }
 
 function drawFlowArrows() {
-  push(); stroke(122, 210, 245, 90); fill(122, 210, 245, 90); strokeWeight(1);
-  let step = 12;
+  push(); stroke(122, 210, 245, 55); fill(122, 210, 245, 55); strokeWeight(1);
+  let step = 18;
   for (let y = step; y < height; y += step) for (let x = step; x < width; x += step) {
     let vx = flowAt(x, y);
     let m = Math.abs(vx);
     if (m < 0.05) continue;
     let sx = Math.sign(vx);
-    let L = constrain(m * 6, 2, step * 0.9);
+    let L = constrain(m * 3.5, 2, step * 0.7);
     line(x, y, x + sx * L, y);
     triangle(x + sx*L, y, x + sx*L - sx*3, y - 3, x + sx*L - sx*3, y + 3);
   }
@@ -248,12 +248,12 @@ function draw() {
 
   if (showFlow) drawFlowArrows();
 
-  // particles
+  // particles (sediment stays magenta; brighten slightly with speed, no hue shift into flow-cyan)
   noStroke();
   for (let p of particles) {
     let spd = Math.abs(p.vx);
     let t = constrain(spd / 8.0, 0, 1);
-    fill(255 - (255-70)*t, 68 + (180-68)*t, 170 + (230-170)*t, 200);
+    fill(255, 68 + 40 * t, 170 + 26 * t, 150 + 55 * t);
     circle(p.x, p.y, 2.5);
   }
 
