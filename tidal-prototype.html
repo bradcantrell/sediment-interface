@@ -405,12 +405,18 @@ function erodeStructures() {
     if (m === 'hardened') continue;      // hardened does not erode
     let fs = Math.abs(flowAt(gx*BED_CELL, gy*BED_CELL));
     if (fs > erodeThresh) {
-      structGrid[i] = max(0, structGrid[i] - STRUCT_ERODE * (fs - erodeThresh) * (1 - EDGE_TYPES[m].resist));
+      let erode = min(STRUCT_ERODE * (fs - erodeThresh) * (1 - EDGE_TYPES[m].resist), structGrid[i]);
+      structGrid[i] -= erode;
+      // eroded material re-enters the sediment system as suspended particles
+      if (erode > 0.05 && random() < 0.1 && particles.length < PARTICLE_COUNT * 1.5) {
+        particles.push({ x: gx*BED_CELL + BED_CELL/2, y: gy*BED_CELL + BED_CELL/2, vx: 0, vy: 0, born: simTime });
+      }
     }
   }
 }
 
-function mousePressed() {
+function mousePressed(e) {
+  if (e && e.target && e.target.tagName !== 'CANVAS') return;   // ignore clicks on UI (popup, panel)
   if (structMode) {
     if (structPoints.length >= 3) {
       let p0 = structPoints[0];
@@ -426,7 +432,8 @@ function mousePressed() {
     mouseDownPos = { x: mouseX, y: mouseY };
   }
 }
-function mouseReleased() {
+function mouseReleased(e) {
+  if (e && e.target && e.target.tagName !== 'CANVAS') return;   // ignore clicks on UI
   if (!structMode && mouseDownPos) {
     let dx = mouseX - mouseDownPos.x, dy = mouseY - mouseDownPos.y;
     if (dx*dx + dy*dy < 25) {           // click (not drag) -> select a structure
