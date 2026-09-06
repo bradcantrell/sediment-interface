@@ -36,12 +36,12 @@
     <input type="range" id="sSet" min="0" max="0.5" step="0.01" value="0.2">
     <button id="bMorph" class="on">MORPHOLOGY — on</button>
     <button id="bFlow" class="on">FLOW — on</button>
+    <button id="bSpots" class="on">SPOT ELEVATIONS — on</button>
     <button id="bReset">RESET BED + SEDIMENT</button>
   </div>
   <div id="legend">
-    accretion <span class="sw" style="background:#ffd166"></span>&nbsp; erosion <span class="sw" style="background:#4cc9f0"></span><br>
-    flow <span class="sw" style="background:#7ad0f0"></span><br>
-    sediment <span class="sw" style="background:#ff44aa"></span>
+    accretion <span class="sw" style="background:#ffd166"></span> +60 &nbsp; erosion <span class="sw" style="background:#4cc9f0"></span> −60<br>
+    flow <span class="sw" style="background:#7ad0f0"></span> &nbsp; sediment <span class="sw" style="background:#ff44aa"></span> &nbsp; spot elev. <span style="color:#ffe6aa">+12</span>
   </div>
   <div id="brush-hint">sea ← inlet at left · land → dead end at right · drag = carve · shift+drag = fill</div>
 </div>
@@ -51,13 +51,16 @@ const BED_CELL = 8, BED_MAX = 160;
 const PARTICLE_COUNT = 1600, MAX_AGE = 1200;
 const FLOW_SCALE = 96;          // maps d(eta)/dt to visual px/frame velocity
 const NET_COEF = 0.012;         // net transport coefficient (Stokes drift from M4 asymmetry)
+const settleThresh = 1.5, erodeThresh = 3.5, DEPO_AMOUNT = 1.5;   // local reworking (grain)
+const settleProb = 0.012, erodeProb = 0.05;                       // balanced → texture, little net
+const MORPH_SCALE = 60;          // net-change units for full morphology colour saturation
 
 let particles = [];
 let simTime = 0;
 let GW, GH, userBedGrid, depoGrid;
 let tidalAmp = 3, tidalPeriod = 360, asym = 0.12;
 let netRate = 0.2;              // net sediment transport rate (asymmetry-driven)
-let showMorph = true, showFlow = true;
+let showMorph = true, showFlow = true, showSpots = true;
 
 function smoothstep(t, e0, e1) { let x = constrain((t - e0) / (e1 - e0), 0, 1); return x * x * (3 - 2 * x); }
 
@@ -166,6 +169,15 @@ function updateParticles() {
     p.x += p.vx * 0.4;
     p.y += p.vy * 0.4;
 
+    // local sediment reworking — settle at slack, erode at peak flow (grainy patterning)
+    let fs = Math.abs(flowAt(p.x, p.y));
+    if (fs < settleThresh) {
+      let s = 1 - fs / settleThresh;
+      if (random() < settleProb * s * 6) addDeposit(p.x, p.y, DEPO_AMOUNT);
+    } else if (fs > erodeThresh) {
+      if (random() < erodeProb) addDeposit(p.x, p.y, -DEPO_AMOUNT);
+    }
+
     let age = simTime - p.born;
     if (p.x < 0 || p.x > width || p.y < 0 || p.y > height || age > MAX_AGE) { particles.splice(i, 1); continue; }
   }
@@ -186,6 +198,7 @@ function setup() {
   document.getElementById('sSet').oninput = e => netRate = +e.target.value;
   document.getElementById('bMorph').onclick = e => { showMorph = !showMorph; e.target.classList.toggle('on', showMorph); e.target.textContent = 'MORPHOLOGY — ' + (showMorph?'on':'off'); };
   document.getElementById('bFlow').onclick = e => { showFlow = !showFlow; e.target.classList.toggle('on', showFlow); e.target.textContent = 'FLOW — ' + (showFlow?'on':'off'); };
+  document.getElementById('bSpots').onclick = e => { showSpots = !showSpots; e.target.classList.toggle('on', showSpots); e.target.textContent = 'SPOT ELEVATIONS — ' + (showSpots?'on':'off'); };
   document.getElementById('bReset').onclick = () => { simTime = 0; depoGrid.fill(0); defaultBed(); };
 }
 
@@ -234,16 +247,34 @@ function draw() {
     rect(gx*BED_CELL, gy*BED_CELL, BED_CELL+1, BED_CELL+1);
   }
 
-  // morphology (net accretion / erosion)
+  // morphology (net accretion / erosion) — diverging ramp: cool erosion <-> warm accretion
   if (showMorph) {
     noStroke();
     for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++) {
       let d = depoGrid[gx + gy*GW];
-      if (Math.abs(d) < 1.5) continue;
-      let a = constrain(Math.abs(d) * 2.2, 0, 200);
-      if (d > 0) fill(255, 209, 102, a); else fill(76, 180, 240, a);
+      let t = constrain(Math.abs(d) / MORPH_SCALE, 0, 1);
+      if (t < 0.04) continue;
+      let a = constrain(t * 230, 0, 230);
+      if (d > 0) fill(255, 220 - 70*t, 160 - 100*t, a);   // warm accretion (amber -> deep amber)
+      else       fill(130 - 90*t, 200 - 90*t, 245, a);     // cool erosion (light -> deep blue)
       rect(gx*BED_CELL, gy*BED_CELL, BED_CELL, BED_CELL);
     }
+  }
+
+  // spot elevations — numeric net-change labels (forming + / eroding −)
+  if (showSpots) {
+    push(); textAlign(CENTER, CENTER); textSize(9); noStroke();
+    let step = 5;
+    for (let gy = step; gy < GH; gy += step) {
+      for (let gx = step; gx < GW; gx += step) {
+        let d = depoGrid[gx + gy*GW];
+        if (Math.abs(d) < 2) continue;
+        let x = gx*BED_CELL, y = gy*BED_CELL;
+        if (d > 0) fill(255, 235, 170); else fill(150, 210, 250);
+        text((d > 0 ? '+' : '') + d.toFixed(0), x, y);
+      }
+    }
+    pop();
   }
 
   if (showFlow) drawFlowArrows();
