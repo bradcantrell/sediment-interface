@@ -29,6 +29,7 @@
 <div id="wrap">
   <div id="hud"></div>
   <div id="panel">
+    <button id="bPause">RUNNING — click to pause</button>
     <label>TIDE AMPLITUDE <span class="val" id="vAmp"></span></label>
     <input type="range" id="sAmp" min="0.5" max="6" step="0.1" value="3">
     <label>TIDE PERIOD (frames) <span class="val" id="vPer"></span></label>
@@ -74,6 +75,7 @@ let GW, GH, userBedGrid, depoGrid;
 let tidalAmp = 3, tidalPeriod = 360, asym = 0.12;
 let netRate = 0.2;              // net sediment transport rate (asymmetry-driven)
 let showMorph = true, showFlow = true, showSpots = true;
+let paused = false;
 
 // channel geometry + connectivity + edge treatment
 let channelBed = 40, marshBed = 130;      // bed elevations (lower = deeper)
@@ -219,6 +221,13 @@ function updateParticles() {
   while (particles.length < PARTICLE_COUNT) particles.push(spawnParticle());
 }
 
+function togglePause() {
+  paused = !paused;
+  let b = document.getElementById('bPause');
+  if (b) { b.textContent = paused ? 'PAUSED — click to run' : 'RUNNING — click to pause'; b.classList.toggle('on', paused); }
+}
+function keyPressed() { if (key === ' ') { togglePause(); return false; } }
+
 function setup() {
   let c = createCanvas(windowWidth, windowHeight);
   c.parent('wrap');
@@ -242,6 +251,7 @@ function setup() {
   document.getElementById('bFlow').onclick = e => { showFlow = !showFlow; e.target.classList.toggle('on', showFlow); e.target.textContent = 'FLOW — ' + (showFlow?'on':'off'); };
   document.getElementById('bSpots').onclick = e => { showSpots = !showSpots; e.target.classList.toggle('on', showSpots); e.target.textContent = 'SPOT ELEVATIONS — ' + (showSpots?'on':'off'); };
   document.getElementById('bReset').onclick = () => { simTime = 0; depoGrid.fill(0); defaultBed(); };
+  document.getElementById('bPause').onclick = togglePause;
 }
 
 function paintBed(raise) {
@@ -273,19 +283,21 @@ function drawFlowArrows() {
 }
 
 function draw() {
-  simTime += 1;
-  updateParticles();
-  applyNetTransport();
+  if (!paused) {
+    simTime += 1;
+    updateParticles();
+    applyNetTransport();
+  }
   paintBed(keyIsDown(SHIFT));
 
   background(11, 14, 20);
 
-  // bed surface
+  // bed surface — hypsometric ramp of the actual elevation (deep blue -> tan)
   noStroke();
   for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++) {
-    let z = userBedGrid[gx + gy*GW];
-    let sh = map(z, 30, 140, 26, 74);
-    fill(18, 26, 40 + sh * 0.35);
+    let z = userBedGrid[gx + gy*GW] + depoGrid[gx + gy*GW];   // actual elevation
+    let t = constrain((z - 10) / 140, 0, 1);    // 0 = deep, 1 = shallow
+    fill(16 + 190*t, 30 + 145*t, 52 + 76*t);
     rect(gx*BED_CELL, gy*BED_CELL, BED_CELL+1, BED_CELL+1);
   }
 
@@ -303,17 +315,16 @@ function draw() {
     }
   }
 
-  // spot elevations — numeric net-change labels (forming + / eroding −)
+  // spot elevations — numeric bed elevation (initial + carve/fill + deposition)
   if (showSpots) {
-    push(); textAlign(CENTER, CENTER); textSize(9); noStroke();
+    push(); textAlign(CENTER, CENTER); textSize(9); stroke(10, 14, 20, 190); strokeWeight(2.5);
     let step = 5;
     for (let gy = step; gy < GH; gy += step) {
       for (let gx = step; gx < GW; gx += step) {
-        let d = depoGrid[gx + gy*GW];
-        if (Math.abs(d) < 2) continue;
+        let z = userBedGrid[gx + gy*GW] + depoGrid[gx + gy*GW];   // actual elevation
         let x = gx*BED_CELL, y = gy*BED_CELL;
-        if (d > 0) fill(255, 235, 170); else fill(150, 210, 250);
-        text((d > 0 ? '+' : '') + d.toFixed(0), x, y);
+        fill(235, 240, 245);
+        text(z.toFixed(0), x, y);
       }
     }
     pop();
@@ -343,6 +354,7 @@ function draw() {
   let lbl = de > 0.02 ? 'FLOOD  →' : (de < -0.02 ? '←  EBB' : 'SLACK');
   let asymLbl = asym > 0.02 ? 'flood-dominant' : (asym < -0.02 ? 'ebb-dominant' : 'symmetric');
   document.getElementById('hud').innerHTML =
+    (paused ? '<span style="color:#ffd166">PAUSED</span> · ' : '') +
     't = ' + simTime + ' &nbsp; <span class="ph">' + lbl + '</span> &nbsp; ' + asymLbl + '<br>' +
     'flow = ' + (FLOW_SCALE * de).toFixed(1) + ' px/frame · particles = ' + particles.length;
   document.getElementById('vAmp').textContent = tidalAmp.toFixed(1);
