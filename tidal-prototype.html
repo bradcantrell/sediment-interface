@@ -32,10 +32,8 @@
     <input type="range" id="sPer" min="120" max="1200" step="30" value="360">
     <label>ASYMMETRY (M4) <span class="val" id="vAsy"></span></label>
     <input type="range" id="sAsy" min="-0.3" max="0.3" step="0.01" value="0.12">
-    <label>SETTLE RATE <span class="val" id="vSet"></span></label>
-    <input type="range" id="sSet" min="0" max="0.15" step="0.005" value="0.02">
-    <label>ERODE RATE <span class="val" id="vEro"></span></label>
-    <input type="range" id="sEro" min="0" max="0.08" step="0.002" value="0.05">
+    <label>NET TRANSPORT RATE <span class="val" id="vSet"></span></label>
+    <input type="range" id="sSet" min="0" max="0.5" step="0.01" value="0.2">
     <button id="bMorph" class="on">MORPHOLOGY — on</button>
     <button id="bFlow" class="on">FLOW — on</button>
     <button id="bReset">RESET BED + SEDIMENT</button>
@@ -52,30 +50,60 @@
 const BED_CELL = 8, BED_MAX = 160;
 const PARTICLE_COUNT = 1600, MAX_AGE = 1200;
 const FLOW_SCALE = 96;          // maps d(eta)/dt to visual px/frame velocity
-const NET_DRIFT = 0.5;          // net landward/seaward transport per unit asymmetry
-const settleThresh = 1.5, erodeThresh = 3.5, DEPO_AMOUNT = 1.5;
+const NET_COEF = 0.012;         // net transport coefficient (Stokes drift from M4 asymmetry)
 
 let particles = [];
 let simTime = 0;
 let GW, GH, userBedGrid, depoGrid;
 let tidalAmp = 3, tidalPeriod = 360, asym = 0.12;
-let settleProb = 0.02, erodeProb = 0.05;
+let netRate = 0.2;              // net sediment transport rate (asymmetry-driven)
 let showMorph = true, showFlow = true;
 
 function smoothstep(t, e0, e1) { let x = constrain((t - e0) / (e1 - e0), 0, 1); return x * x * (3 - 2 * x); }
 
-// water level (m relative to mean) and its time derivative
+// water level (m relative to mean) and its time derivative.
+// eta keeps the M4 harmonic so the *tide gauge* shows flood/ebb asymmetry;
+// dEtaDt is M2-only so the instantaneous slosh is symmetric, with the net
+// (residual) transport carried explicitly by netTransport() below.
 function etaLevel() { let w = 2 * Math.PI / tidalPeriod; return tidalAmp * (Math.sin(w * simTime) + asym * Math.sin(2 * w * simTime)); }
-function dEtaDt()     { let w = 2 * Math.PI / tidalPeriod; return tidalAmp * w * (Math.cos(w * simTime) + 2 * asym * Math.cos(2 * w * simTime)); }
+function dEtaDt()     { let w = 2 * Math.PI / tidalPeriod; return tidalAmp * w * Math.cos(w * simTime); }
 
 // along-channel flow: +x = landward (flood), -x = seaward (ebb).
 // zero at the landward end (dead-end), max at the sea inlet; concentrated in the channel.
-function flowAt(x, y) {
-  let landward = (width - x) / width;            // 1 at sea (left) -> 0 at land (right)
+function chanF(y) {
   let t = Math.abs(y / height - 0.5) * 2;        // 0 channel centre, 1 marsh edge
-  let chanF = 1 - 0.75 * smoothstep(t, 0.3, 0.72); // 1 in channel, 0.25 on marsh
-  // oscillating tidal flow + a net transport proportional to the flood/ebb asymmetry (tidal pumping)
-  return dEtaDt() * landward * chanF * FLOW_SCALE + asym * NET_DRIFT * chanF;
+  return 1 - 0.75 * smoothstep(t, 0.3, 0.72);    // 1 in channel, 0.25 on marsh
+}
+function landward(x) { return 1 - smoothstep(x / width, 0.6, 1.0); }  // ~1 until near the dead end, then -> 0
+
+// local M2 flow amplitude (spatial envelope)
+function flowAmplitude(x, y) {
+  let w = 2 * Math.PI / tidalPeriod;
+  return tidalAmp * w * landward(x) * chanF(y) * FLOW_SCALE;
+}
+// net transport (Stokes drift) from the M4 tidal asymmetry:  mean(u^3) = (3/4) A^2 B  ∝  asym · A^3
+function netTransport(x, y) {
+  let amp = flowAmplitude(x, y);
+  return NET_COEF * asym * amp * amp * amp;
+}
+// instantaneous along-channel flow: oscillating tide + steady net transport
+function flowAt(x, y) {
+  return dEtaDt() * landward(x) * chanF(y) * FLOW_SCALE + netTransport(x, y);
+}
+
+// Net sediment transport from the tidal asymmetry (M4).
+// flood-dominant (asym>0) imports sediment and deposits it where the flow slackens to
+// zero — the dead end (the Torcello siltation story). ebb-dominant (asym<0) scours it.
+function applyNetTransport() {
+  for (let gy = 0; gy < GH; gy++) {
+    let y = gy * BED_CELL;
+    let chanW = chanF(y);                 // transport lives in the channel
+    for (let gx = 0; gx < GW; gx++) {
+      let x = gx * BED_CELL;
+      let deadEnd = 1 - landward(x);      // 0 at inlet -> 1 at dead end (siltation zone)
+      depoGrid[gx + gy * GW] += netRate * asym * deadEnd * chanW;
+    }
+  }
 }
 
 // ---- bed ----
@@ -119,14 +147,17 @@ function spawnParticle() {
 function updateParticles() {
   for (let i = particles.length - 1; i >= 0; i--) {
     let p = particles[i];
-    let velVx = flowAt(p.x, p.y);
-    p.vx += (velVx - p.vx) * 0.35;
-    p.vy += (0 - p.vy) * 0.05;
+    // midpoint (RK2) integration along x: evaluate the flow at the half-step to kill
+    // the O(dt) spurious drift that plain forward-Euler picks up from the (1-x/L) decay.
+    let velVx1 = flowAt(p.x, p.y);
+    let xmid = p.x + velVx1 * 0.2;
+    let velVx = flowAt(xmid, p.y);
     let spd = Math.abs(velVx);
-    p.vx += (noise(p.x*0.02, p.y*0.02, simTime*0.05) - 0.5) * 0.14 * spd;
-    p.vy += (noise(p.x*0.02+50, p.y*0.02, simTime*0.05) - 0.5) * 0.14 * spd;
+    let turb = (noise(p.x*0.02, p.y*0.02, simTime*0.05) - 0.5) * 0.35 * spd;
+    p.vx = velVx + turb;
+    p.vy = (noise(p.x*0.02+50, p.y*0.02, simTime*0.05) - 0.5) * 0.35 * spd;
 
-    // gravity slide down the bed (toward deeper channel)
+    // gravity slide down the bed (transverse, into the deeper channel)
     let gradY = (bedZ(p.x, p.y - 4) - bedZ(p.x, p.y + 4)) / 8;
     let gradX = (bedZ(p.x - 4, p.y) - bedZ(p.x + 4, p.y)) / 8;
     p.vy += gradY * cellH * 1.4;
@@ -134,15 +165,6 @@ function updateParticles() {
 
     p.x += p.vx * 0.4;
     p.y += p.vy * 0.4;
-
-    // deposition at slack, erosion at peak flow
-    let fs = Math.abs(flowAt(p.x, p.y));
-    if (fs < settleThresh) {
-      let s = 1 - fs / settleThresh;
-      if (random() < settleProb * s * 6) addDeposit(p.x, p.y, DEPO_AMOUNT);
-    } else if (fs > erodeThresh) {
-      if (random() < erodeProb) addDeposit(p.x, p.y, -DEPO_AMOUNT);
-    }
 
     let age = simTime - p.born;
     if (p.x < 0 || p.x > width || p.y < 0 || p.y > height || age > MAX_AGE) { particles.splice(i, 1); continue; }
@@ -161,8 +183,7 @@ function setup() {
   document.getElementById('sAmp').oninput = e => tidalAmp = +e.target.value;
   document.getElementById('sPer').oninput = e => tidalPeriod = +e.target.value;
   document.getElementById('sAsy').oninput = e => asym = +e.target.value;
-  document.getElementById('sSet').oninput = e => settleProb = +e.target.value;
-  document.getElementById('sEro').oninput = e => erodeProb = +e.target.value;
+  document.getElementById('sSet').oninput = e => netRate = +e.target.value;
   document.getElementById('bMorph').onclick = e => { showMorph = !showMorph; e.target.classList.toggle('on', showMorph); e.target.textContent = 'MORPHOLOGY — ' + (showMorph?'on':'off'); };
   document.getElementById('bFlow').onclick = e => { showFlow = !showFlow; e.target.classList.toggle('on', showFlow); e.target.textContent = 'FLOW — ' + (showFlow?'on':'off'); };
   document.getElementById('bReset').onclick = () => { simTime = 0; depoGrid.fill(0); defaultBed(); };
@@ -199,6 +220,7 @@ function drawFlowArrows() {
 function draw() {
   simTime += 1;
   updateParticles();
+  applyNetTransport();
   paintBed(keyIsDown(SHIFT));
 
   background(11, 14, 20);
@@ -257,8 +279,7 @@ function draw() {
   document.getElementById('vAmp').textContent = tidalAmp.toFixed(1);
   document.getElementById('vPer').textContent = tidalPeriod;
   document.getElementById('vAsy').textContent = asym.toFixed(2);
-  document.getElementById('vSet').textContent = settleProb.toFixed(3);
-  document.getElementById('vEro').textContent = erodeProb.toFixed(3);
+  document.getElementById('vSet').textContent = netRate.toFixed(2);
 }
 
 function windowResized() {
