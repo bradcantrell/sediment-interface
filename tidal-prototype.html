@@ -17,6 +17,10 @@
   #panel .val{float:right;color:#ffd166;}
   #panel button{width:100%;margin-top:8px;padding:6px;background:#22304a;color:#cdd6e4;border:1px solid #3a4a66;border-radius:5px;cursor:pointer;font-family:inherit;}
   #panel button.on{background:#7a4a12;border-color:#ffd166;color:#fff;}
+  #panel .notes{margin-top:12px;padding-top:10px;border-top:1px solid #2a3444;color:#8fa2bd;font-size:11px;line-height:1.5;}
+  #panel .notes-title{color:#ffd166;font-weight:bold;letter-spacing:.05em;margin-bottom:5px;}
+  #panel .notes ul{margin:4px 0 0;padding-left:15px;}
+  #panel .notes li{margin:3px 0;}
   #legend{position:absolute;right:14px;bottom:14px;font-size:11px;color:#8fa2bd;line-height:1.6;text-align:right;background:rgba(20,26,36,.85);border:1px solid #2a3444;border-radius:8px;padding:8px 12px;}
   .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-left:4px;vertical-align:-1px;}
   #tide-box{position:absolute;left:14px;bottom:14px;font-size:11px;color:#8fa2bd;line-height:1.5;background:rgba(20,26,36,.85);border:1px solid #2a3444;border-radius:8px;padding:8px 12px;}
@@ -49,6 +53,17 @@
     <button id="bFlow" class="on">FLOW — on</button>
     <button id="bSpots" class="on">SPOT ELEVATIONS — on</button>
     <button id="bReset">RESET BED + SEDIMENT</button>
+    <div class="notes">
+      <div class="notes-title">NOTES · DIMENSIONLESS</div>
+      A sketching instrument, not a calibrated hydrodynamic model — values are abstract, not meters or hours.
+      <ul>
+        <li>Bed elevations: channel ≈ 40, marsh ≈ 130 (lower = deeper)</li>
+        <li>Flow: pixels per frame (~5 peak in the channel)</li>
+        <li>Tide: one cycle = 360 frames = one full flood + ebb</li>
+        <li>Asymmetry (M4): quarter-diurnal harmonic, 2× the tide frequency — drives net transport</li>
+        <li>Morphology: deposition/erosion, ramp saturates at ±60</li>
+      </ul>
+    </div>
   </div>
   <div id="tide-box">
     <div>TIDE</div>
