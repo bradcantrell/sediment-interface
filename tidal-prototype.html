@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tidal Sediment — channel + marsh, net accretion/erosion</title>
+<title>Tidal Sediment — shallow-water tidal prism (symmetric flood/ebb)</title>
 <script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
 <style>
   html,body{margin:0;padding:0;background:#0b0e14;color:#cdd6e4;font-family:ui-monospace,Menlo,Consolas,monospace;}
@@ -27,122 +27,55 @@
   <div id="hud"></div>
   <div id="panel">
     <label>TIDE AMPLITUDE <span class="val" id="vAmp"></span></label>
-    <input type="range" id="sAmp" min="0.5" max="5" step="0.1" value="2.2">
+    <input type="range" id="sAmp" min="0.5" max="6" step="0.1" value="3">
     <label>TIDE PERIOD (frames) <span class="val" id="vPer"></span></label>
     <input type="range" id="sPer" min="120" max="1200" step="30" value="360">
-    <label>RESIDUAL (net drift) <span class="val" id="vRes"></span></label>
-    <input type="range" id="sRes" min="-0.8" max="1.5" step="0.05" value="0.5">
+    <label>ASYMMETRY (M4) <span class="val" id="vAsy"></span></label>
+    <input type="range" id="sAsy" min="-0.3" max="0.3" step="0.01" value="0.12">
     <label>SETTLE RATE <span class="val" id="vSet"></span></label>
     <input type="range" id="sSet" min="0" max="0.15" step="0.005" value="0.02">
     <label>ERODE RATE <span class="val" id="vEro"></span></label>
     <input type="range" id="sEro" min="0" max="0.08" step="0.002" value="0.05">
     <button id="bMorph" class="on">MORPHOLOGY — on</button>
-    <button id="bFlow" class="on">LIVE FLOW — on</button>
-    <button id="bNet" class="on">NET DRIFT — on</button>
+    <button id="bFlow" class="on">FLOW — on</button>
     <button id="bReset">RESET BED + SEDIMENT</button>
   </div>
   <div id="legend">
     accretion <span class="sw" style="background:#ffd166"></span>&nbsp; erosion <span class="sw" style="background:#4cc9f0"></span><br>
-    live flow <span class="sw" style="background:#7ad0f0"></span>&nbsp; net drift <span class="sw" style="background:#ffaa55"></span><br>
+    flow <span class="sw" style="background:#7ad0f0"></span><br>
     sediment <span class="sw" style="background:#ff44aa"></span>
   </div>
-  <div id="brush-hint">drag = carve channel · shift+drag = fill marsh</div>
+  <div id="brush-hint">sea ← inlet at left · land → dead end at right · drag = carve · shift+drag = fill</div>
 </div>
 <script>
-const NX = 120, NY = 68;
-const SIZE = (NX + 2) * (NY + 2);
-const DT = 0.08, VISC = 0.00005, GS_ITERS = 30;
-const PARTICLE_COUNT = 1600, MAX_AGE = 900;
+// ── TIDAL PRISM MODEL (analytic short-channel shallow-water limit) ──
 const BED_CELL = 8, BED_MAX = 160;
+const PARTICLE_COUNT = 1600, MAX_AGE = 1200;
+const FLOW_SCALE = 96;          // maps d(eta)/dt to visual px/frame velocity
+const NET_DRIFT = 0.5;          // net landward/seaward transport per unit asymmetry
+const settleThresh = 1.5, erodeThresh = 3.5, DEPO_AMOUNT = 1.5;
 
-let u, v, uPrev, vPrev, pArr, divArr, solid;
-let uMean, vMean;
-let cellW, cellH;
 let particles = [];
 let simTime = 0;
 let GW, GH, userBedGrid, depoGrid;
-
-let tidalAmp = 2.2, tidalPeriod = 360, residual = 0.5;
+let tidalAmp = 3, tidalPeriod = 360, asym = 0.12;
 let settleProb = 0.02, erodeProb = 0.05;
-const settleThresh = 4.0, erodeThresh = 8.0, DEPO_AMOUNT = 1.5;
-let showMorph = true, showFlow = true, showNet = true;
+let showMorph = true, showFlow = true;
 
-function IX(i, j) { return i + (NX + 2) * j; }
 function smoothstep(t, e0, e1) { let x = constrain((t - e0) / (e1 - e0), 0, 1); return x * x * (3 - 2 * x); }
 
-function addSource(x, s) {
-  for (let j = 1; j <= NY; j++) for (let i = 1; i <= NX; i++) {
-    let idx = IX(i, j); if (solid[idx]) continue; x[idx] += DT * s[idx];
-  }
-}
-function setBnd(b, x) {
-  for (let j = 1; j <= NY; j++) { x[IX(0, j)] = x[IX(1, j)]; }
-  for (let j = 1; j <= NY; j++) { x[IX(NX+1, j)] = x[IX(NX, j)]; }
-  for (let i = 1; i <= NX; i++) {
-    x[IX(i, 0)] = b === 2 ? -x[IX(i, 1)] : x[IX(i, 1)];
-    x[IX(i, NY+1)] = b === 2 ? -x[IX(i, NY)] : x[IX(i, NY)];
-  }
-  x[IX(0,0)] = 0.5*(x[IX(1,0)]+x[IX(0,1)]);
-  x[IX(0,NY+1)] = 0.5*(x[IX(1,NY+1)]+x[IX(0,NY)]);
-  x[IX(NX+1,0)] = 0.5*(x[IX(NX,0)]+x[IX(NX+1,1)]);
-  x[IX(NX+1,NY+1)] = 0.5*(x[IX(NX,NY+1)]+x[IX(NX+1,NY)]);
-}
-function linSolve(b, x, x0, a, c) {
-  for (let iter = 0; iter < GS_ITERS; iter++) {
-    for (let j = 1; j <= NY; j++) for (let i = 1; i <= NX; i++) {
-      let idx = IX(i, j); if (solid[idx]) continue;
-      let l = solid[IX(i-1,j)] ? x[idx] : x[IX(i-1,j)];
-      let r = solid[IX(i+1,j)] ? x[idx] : x[IX(i+1,j)];
-      let b2 = solid[IX(i,j-1)] ? x[idx] : x[IX(i,j-1)];
-      let t = solid[IX(i,j+1)] ? x[idx] : x[IX(i,j+1)];
-      x[idx] = (x0[idx] + a * (l + r + b2 + t)) / c;
-    }
-    setBnd(b, x);
-  }
-}
-function diffuse(b, x, x0, diff) { let a = DT * diff * NX * NY; linSolve(b, x, x0, a, 1 + 4*a); }
-function advect(b, d, d0, uVec, vVec) {
-  let dt0 = DT * NX;
-  for (let j = 1; j <= NY; j++) for (let i = 1; i <= NX; i++) {
-    let idx = IX(i, j); if (solid[idx]) { d[idx] = 0; continue; }
-    let x = i - dt0 * uVec[idx], y = j - dt0 * vVec[idx];
-    x = constrain(x, 0.5, NX + 0.5); y = constrain(y, 0.5, NY + 0.5);
-    let i0 = floor(x), i1 = i0+1, j0 = floor(y), j1 = j0+1;
-    if (solid[IX(i0,j0)]||solid[IX(i1,j0)]||solid[IX(i0,j1)]||solid[IX(i1,j1)]) { d[idx] = d0[idx]; continue; }
-    let sx = x - i0, sy = y - j0;
-    d[idx] = (1-sx)*(1-sy)*d0[IX(i0,j0)] + sx*(1-sy)*d0[IX(i1,j0)] + (1-sx)*sy*d0[IX(i0,j1)] + sx*sy*d0[IX(i1,j1)];
-  }
-  setBnd(b, d);
-}
-function project(uVec, vVec, pVec, dVec) {
-  for (let j = 1; j <= NY; j++) for (let i = 1; i <= NX; i++) {
-    let idx = IX(i, j); if (solid[idx]) { dVec[idx] = 0; pVec[idx] = 0; continue; }
-    let uR = solid[IX(i+1,j)]?0:uVec[IX(i+1,j)], uL = solid[IX(i-1,j)]?0:uVec[IX(i-1,j)];
-    let vT = solid[IX(i,j+1)]?0:vVec[IX(i,j+1)], vB = solid[IX(i,j-1)]?0:vVec[IX(i,j-1)];
-    dVec[idx] = -0.5*(uR-uL+vT-vB); pVec[idx] = 0;
-  }
-  setBnd(0, dVec); setBnd(0, pVec);
-  linSolve(0, pVec, dVec, 1, 4);
-  for (let j = 1; j <= NY; j++) for (let i = 1; i <= NX; i++) {
-    let idx = IX(i, j); if (solid[idx]) continue;
-    uVec[idx] -= 0.5*(pVec[IX(i+1,j)] - pVec[IX(i-1,j)]);
-    vVec[idx] -= 0.5*(pVec[IX(i,j+1)] - pVec[IX(i,j-1)]);
-  }
-  setBnd(1, uVec); setBnd(2, vVec);
-}
-function tidalVel() { return tidalAmp * Math.sin(2 * Math.PI * simTime / tidalPeriod) + residual; }
-function velocityStep() {
-  let tv = tidalVel();
-  for (let j = 1; j <= NY; j++) {
-    let idx = IX(1, j);
-    if (!solid[idx]) { let nz = (noise(j * 0.15, simTime * 0.01) - 0.5) * 0.3; u[idx] = tv + nz; }
-  }
-  diffuse(1, uPrev, u, VISC);
-  project(uPrev, vPrev, pArr, divArr);
-  advect(1, u, uPrev, uPrev, vPrev);
-  advect(2, v, vPrev, uPrev, vPrev);
-  project(u, v, pArr, divArr);
-  for (let k = 0; k < SIZE; k++) { uMean[k] += (u[k] - uMean[k]) * 0.008; vMean[k] += (v[k] - vMean[k]) * 0.008; }
+// water level (m relative to mean) and its time derivative
+function etaLevel() { let w = 2 * Math.PI / tidalPeriod; return tidalAmp * (Math.sin(w * simTime) + asym * Math.sin(2 * w * simTime)); }
+function dEtaDt()     { let w = 2 * Math.PI / tidalPeriod; return tidalAmp * w * (Math.cos(w * simTime) + 2 * asym * Math.cos(2 * w * simTime)); }
+
+// along-channel flow: +x = landward (flood), -x = seaward (ebb).
+// zero at the landward end (dead-end), max at the sea inlet; concentrated in the channel.
+function flowAt(x, y) {
+  let landward = (width - x) / width;            // 1 at sea (left) -> 0 at land (right)
+  let t = Math.abs(y / height - 0.5) * 2;        // 0 channel centre, 1 marsh edge
+  let chanF = 1 - 0.75 * smoothstep(t, 0.3, 0.72); // 1 in channel, 0.25 on marsh
+  // oscillating tidal flow + a net transport proportional to the flood/ebb asymmetry (tidal pumping)
+  return dEtaDt() * landward * chanF * FLOW_SCALE + asym * NET_DRIFT * chanF;
 }
 
 // ---- bed ----
@@ -151,16 +84,14 @@ function userBedAt(x, y) {
   let x0 = constrain(floor(gx), 0, GW-1), y0 = constrain(floor(gy), 0, GH-1);
   let x1 = min(x0+1, GW-1), y1 = min(y0+1, GH-1);
   let fx = gx - x0, fy = gy - y0;
-  return userBedGrid[x0+y0*GW]*(1-fx)*(1-fy) + userBedGrid[x1+y0*GW]*fx*(1-fy)
-       + userBedGrid[x0+y1*GW]*(1-fx)*fy + userBedGrid[x1+y1*GW]*fx*fy;
+  return userBedGrid[x0+y0*GW]*(1-fx)*(1-fy) + userBedGrid[x1+y0*GW]*fx*(1-fy) + userBedGrid[x0+y1*GW]*(1-fx)*fy + userBedGrid[x1+y1*GW]*fx*fy;
 }
 function depoAt(x, y) {
   let gx = x / BED_CELL, gy = y / BED_CELL;
   let x0 = constrain(floor(gx), 0, GW-1), y0 = constrain(floor(gy), 0, GH-1);
   let x1 = min(x0+1, GW-1), y1 = min(y0+1, GH-1);
   let fx = gx - x0, fy = gy - y0;
-  return depoGrid[x0+y0*GW]*(1-fx)*(1-fy) + depoGrid[x1+y0*GW]*fx*(1-fy)
-       + depoGrid[x0+y1*GW]*(1-fx)*fy + depoGrid[x1+y1*GW]*fx*fy;
+  return depoGrid[x0+y0*GW]*(1-fx)*(1-fy) + depoGrid[x1+y0*GW]*fx*(1-fy) + depoGrid[x0+y1*GW]*(1-fx)*fy + depoGrid[x1+y1*GW]*fx*fy;
 }
 function bedZ(x, y) { return userBedAt(x, y) + depoAt(x, y); }
 function addDeposit(x, y, amt) {
@@ -169,58 +100,48 @@ function addDeposit(x, y, amt) {
     let nx = gx + dx, ny = gy + dy;
     if (nx < 0 || ny < 0 || nx >= GW || ny >= GH) continue;
     let w = (dx === 0 && dy === 0) ? 0.5 : 0.0625;
-    let idx = nx + ny * GW;
-    depoGrid[idx] = constrain(depoGrid[idx] + amt * w, -BED_MAX, BED_MAX);
+    depoGrid[nx + ny * GW] = constrain(depoGrid[nx + ny * GW] + amt * w, -BED_MAX, BED_MAX);
   }
 }
 function defaultBed() {
   for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++) {
     let y = (gy * BED_CELL) / height;
-    let t = abs(y - 0.5) * 2;               // 0 centre, 1 top/bottom edge
-    let marsh = 130, channel = 40;          // elevations: marsh high, channel low
+    let t = Math.abs(y - 0.5) * 2;
+    let marsh = 130, channel = 40;
     let z = marsh - (marsh - channel) * (1 - smoothstep(t, 0.35, 0.78));
-    let xf = (gx * BED_CELL) / width;        // slight seaward slope
-    z += (xf - 0.5) * 22;
     userBedGrid[gx + gy * GW] = constrain(z, 5, BED_MAX);
   }
 }
 
-function getVelocityAt(px, py) {
-  let i = constrain(floor(px / cellW), 0, NX + 1);
-  let j = constrain(floor(py / cellH), 0, NY + 1);
-  let idx = IX(i, j);
-  return { vx: u[idx] * cellW, vy: v[idx] * cellH };
-}
 function spawnParticle() {
   return { x: random(0, width), y: random(cellH, height - cellH), vx: 0, vy: 0, born: simTime - random(0, MAX_AGE) };
 }
 function updateParticles() {
   for (let i = particles.length - 1; i >= 0; i--) {
     let p = particles[i];
-    let vel = getVelocityAt(p.x, p.y);
-    p.vx += (vel.vx - p.vx) * 0.35;
-    p.vy += (vel.vy - p.vy) * 0.35;
-    let spd = Math.sqrt(vel.vx*vel.vx + vel.vy*vel.vy);
-    p.vx += (noise(p.x*0.02, p.y*0.02, simTime*0.05) - 0.5) * 0.12 * spd;
-    p.vy += (noise(p.x*0.02+50, p.y*0.02, simTime*0.05) - 0.5) * 0.12 * spd;
+    let velVx = flowAt(p.x, p.y);
+    p.vx += (velVx - p.vx) * 0.35;
+    p.vy += (0 - p.vy) * 0.05;
+    let spd = Math.abs(velVx);
+    p.vx += (noise(p.x*0.02, p.y*0.02, simTime*0.05) - 0.5) * 0.14 * spd;
+    p.vy += (noise(p.x*0.02+50, p.y*0.02, simTime*0.05) - 0.5) * 0.14 * spd;
 
-    // gravity slide down the bed (toward deeper = lower z)
-    let bedHere = bedZ(p.x, p.y);
+    // gravity slide down the bed (toward deeper channel)
     let gradY = (bedZ(p.x, p.y - 4) - bedZ(p.x, p.y + 4)) / 8;
     let gradX = (bedZ(p.x - 4, p.y) - bedZ(p.x + 4, p.y)) / 8;
     p.vy += gradY * cellH * 1.4;
     p.vx += gradX * cellW * 0.4;
 
-    p.x += p.vx * DT * 4;
-    p.y += p.vy * DT * 4;
+    p.x += p.vx * 0.4;
+    p.y += p.vy * 0.4;
 
-    let flowSpd = Math.sqrt(vel.vx*vel.vx + vel.vy*vel.vy);
-    if (flowSpd < settleThresh) {
-      let s = 1 - flowSpd / settleThresh;
-      if (random() < settleProb * s * 5) addDeposit(p.x, p.y, DEPO_AMOUNT);
-    } else if (flowSpd > erodeThresh) {
-      let e = (flowSpd - erodeThresh) / erodeThresh;
-      if (random() < erodeProb * (1 + e)) addDeposit(p.x, p.y, -DEPO_AMOUNT * (1 + e));
+    // deposition at slack, erosion at peak flow
+    let fs = Math.abs(flowAt(p.x, p.y));
+    if (fs < settleThresh) {
+      let s = 1 - fs / settleThresh;
+      if (random() < settleProb * s * 6) addDeposit(p.x, p.y, DEPO_AMOUNT);
+    } else if (fs > erodeThresh) {
+      if (random() < erodeProb) addDeposit(p.x, p.y, -DEPO_AMOUNT);
     }
 
     let age = simTime - p.born;
@@ -232,25 +153,19 @@ function updateParticles() {
 function setup() {
   let c = createCanvas(windowWidth, windowHeight);
   c.parent('wrap');
-  cellW = width / (NX + 2); cellH = height / (NY + 2);
+  cellW = width / 60; cellH = height / 34;
   GW = max(1, floor(width / BED_CELL)); GH = max(1, floor(height / BED_CELL));
-  u = new Float32Array(SIZE); v = new Float32Array(SIZE);
-  uPrev = new Float32Array(SIZE); vPrev = new Float32Array(SIZE);
-  pArr = new Float32Array(SIZE); divArr = new Float32Array(SIZE);
-  solid = new Uint8Array(SIZE);
-  uMean = new Float32Array(SIZE); vMean = new Float32Array(SIZE);
   userBedGrid = new Float32Array(GW*GH); depoGrid = new Float32Array(GW*GH);
   defaultBed();
   for (let i = 0; i < PARTICLE_COUNT; i++) particles.push(spawnParticle());
   document.getElementById('sAmp').oninput = e => tidalAmp = +e.target.value;
   document.getElementById('sPer').oninput = e => tidalPeriod = +e.target.value;
-  document.getElementById('sRes').oninput = e => residual = +e.target.value;
+  document.getElementById('sAsy').oninput = e => asym = +e.target.value;
   document.getElementById('sSet').oninput = e => settleProb = +e.target.value;
   document.getElementById('sEro').oninput = e => erodeProb = +e.target.value;
   document.getElementById('bMorph').onclick = e => { showMorph = !showMorph; e.target.classList.toggle('on', showMorph); e.target.textContent = 'MORPHOLOGY — ' + (showMorph?'on':'off'); };
-  document.getElementById('bFlow').onclick = e => { showFlow = !showFlow; e.target.classList.toggle('on', showFlow); e.target.textContent = 'LIVE FLOW — ' + (showFlow?'on':'off'); };
-  document.getElementById('bNet').onclick = e => { showNet = !showNet; e.target.classList.toggle('on', showNet); e.target.textContent = 'NET DRIFT — ' + (showNet?'on':'off'); };
-  document.getElementById('bReset').onclick = () => { simTime = 0; uMean.fill(0); vMean.fill(0); depoGrid.fill(0); defaultBed(); };
+  document.getElementById('bFlow').onclick = e => { showFlow = !showFlow; e.target.classList.toggle('on', showFlow); e.target.textContent = 'FLOW — ' + (showFlow?'on':'off'); };
+  document.getElementById('bReset').onclick = () => { simTime = 0; depoGrid.fill(0); defaultBed(); };
 }
 
 function paintBed(raise) {
@@ -262,38 +177,33 @@ function paintBed(raise) {
     let r = Math.sqrt(dx*dx + dy*dy);
     if (r > 2.5) continue;
     let amt = (raise ? 6 : -6) * (1 - r/3);
-    let idx = nx + ny*GW;
-    userBedGrid[idx] = constrain(userBedGrid[idx] + amt, 5, BED_MAX);
+    userBedGrid[nx + ny*GW] = constrain(userBedGrid[nx + ny*GW] + amt, 5, BED_MAX);
   }
 }
 
-function drawArrows(arr, step, len, r, g, b, alpha) {
-  push(); stroke(r, g, b, alpha); fill(r, g, b, alpha); strokeWeight(1);
-  for (let j = step; j <= NY; j += step) for (let i = step; i <= NX; i += step) {
-    let idx = IX(i, j); if (solid[idx]) continue;
-    let ux = arr === 'mean' ? uMean[idx] : u[idx];
-    let vy = arr === 'mean' ? vMean[idx] : v[idx];
-    let m = Math.sqrt(ux*ux + vy*vy);
-    if (m < 0.0005) continue;
-    let x = i * cellW, y = j * cellH;
-    let sx = ux / m, sy = vy / m;
-    let L = constrain(m * len, 2, step * cellW * 0.6);
-    line(x, y, x + sx*L, y + sy*L);
-    let hx = x + sx*L, hy = y + sy*L, ax = -sy, ay = sx;
-    triangle(hx, hy, hx - sx*3 + ax*3, hy - sy*3 + ay*3, hx - sx*3 - ax*3, hy - sy*3 - ay*3);
+function drawFlowArrows() {
+  push(); stroke(122, 210, 245, 90); fill(122, 210, 245, 90); strokeWeight(1);
+  let step = 12;
+  for (let y = step; y < height; y += step) for (let x = step; x < width; x += step) {
+    let vx = flowAt(x, y);
+    let m = Math.abs(vx);
+    if (m < 0.05) continue;
+    let sx = Math.sign(vx);
+    let L = constrain(m * 6, 2, step * 0.9);
+    line(x, y, x + sx * L, y);
+    triangle(x + sx*L, y, x + sx*L - sx*3, y - 3, x + sx*L - sx*3, y + 3);
   }
   pop();
 }
 
 function draw() {
   simTime += 1;
-  velocityStep();
   updateParticles();
   paintBed(keyIsDown(SHIFT));
 
   background(11, 14, 20);
 
-  // bed surface (elevation shading)
+  // bed surface
   noStroke();
   for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++) {
     let z = userBedGrid[gx + gy*GW];
@@ -302,7 +212,7 @@ function draw() {
     rect(gx*BED_CELL, gy*BED_CELL, BED_CELL+1, BED_CELL+1);
   }
 
-  // morphology heatmap (net accretion / erosion)
+  // morphology (net accretion / erosion)
   if (showMorph) {
     noStroke();
     for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++) {
@@ -314,46 +224,46 @@ function draw() {
     }
   }
 
-  if (showFlow) drawArrows('live', 5, 22, 122, 210, 245, 60);
-  if (showNet) drawArrows('mean', 5, 60, 255, 170, 85, 160);
+  if (showFlow) drawFlowArrows();
 
   // particles
   noStroke();
   for (let p of particles) {
-    let spd = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
-    let t = constrain(spd / 3.0, 0, 1);
+    let spd = Math.abs(p.vx);
+    let t = constrain(spd / 8.0, 0, 1);
     fill(255 - (255-70)*t, 68 + (180-68)*t, 170 + (230-170)*t, 200);
     circle(p.x, p.y, 2.5);
   }
 
   // tide gauge
-  let tv = tidalVel();
+  let et = etaLevel();
   push(); noStroke();
   let gx = 16, gy = height - 40, gw = 180, gh = 12;
   fill(40, 48, 62); rect(gx, gy, gw, gh);
   let mid = gx + gw/2;
-  let bar = constrain(tv / tidalAmp, -1, 1);
+  let bar = constrain(et / tidalAmp, -1, 1);
   if (bar >= 0) { fill(80, 160, 240); rect(mid, gy, bar*gw/2, gh); }
   else { fill(230, 90, 90); rect(mid + bar*gw/2, gy, -bar*gw/2, gh); }
   fill(255,255,255,60); rect(mid-1, gy, 2, gh);
   pop();
 
   // HUD
-  let phase = Math.sin(2*Math.PI*simTime/tidalPeriod);
-  let lbl = phase > 0.15 ? 'FLOOD  →' : (phase < -0.15 ? '←  EBB' : 'SLACK');
+  let de = dEtaDt();
+  let lbl = de > 0.02 ? 'FLOOD  →' : (de < -0.02 ? '←  EBB' : 'SLACK');
+  let asymLbl = asym > 0.02 ? 'flood-dominant' : (asym < -0.02 ? 'ebb-dominant' : 'symmetric');
   document.getElementById('hud').innerHTML =
-    't = ' + simTime + ' &nbsp; <span class="ph">' + lbl + '</span> tidal=' + tv.toFixed(2) + '<br>' +
-    'residual=' + residual.toFixed(2) + ' · particles=' + particles.length;
+    't = ' + simTime + ' &nbsp; <span class="ph">' + lbl + '</span> &nbsp; ' + asymLbl + '<br>' +
+    'flow = ' + (FLOW_SCALE * de).toFixed(1) + ' px/frame · particles = ' + particles.length;
   document.getElementById('vAmp').textContent = tidalAmp.toFixed(1);
   document.getElementById('vPer').textContent = tidalPeriod;
-  document.getElementById('vRes').textContent = residual.toFixed(2);
+  document.getElementById('vAsy').textContent = asym.toFixed(2);
   document.getElementById('vSet').textContent = settleProb.toFixed(3);
   document.getElementById('vEro').textContent = erodeProb.toFixed(3);
 }
 
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
-  cellW = width / (NX + 2); cellH = height / (NY + 2);
+  cellW = width / 60; cellH = height / 34;
   GW = max(1, floor(width / BED_CELL)); GH = max(1, floor(height / BED_CELL));
   userBedGrid = new Float32Array(GW*GH); depoGrid = new Float32Array(GW*GH);
   defaultBed();
