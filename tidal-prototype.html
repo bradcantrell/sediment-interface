@@ -34,6 +34,12 @@
     <input type="range" id="sAsy" min="-0.3" max="0.3" step="0.01" value="0.12">
     <label>NET TRANSPORT RATE <span class="val" id="vSet"></span></label>
     <input type="range" id="sSet" min="0" max="0.5" step="0.01" value="0.2">
+    <label>CHANNEL WIDTH <span class="val" id="vCW"></span></label>
+    <input type="range" id="sCW" min="0.15" max="0.55" step="0.01" value="0.35">
+    <label>CHANNEL BED ELEV <span class="val" id="vCD"></span></label>
+    <input type="range" id="sCD" min="20" max="100" step="2" value="40">
+    <button id="bEnd" class="on">CHANNEL END — dead-end</button>
+    <button id="bEdge">EDGE — vegetated edge</button>
     <button id="bMorph" class="on">MORPHOLOGY — on</button>
     <button id="bFlow" class="on">FLOW — on</button>
     <button id="bSpots" class="on">SPOT ELEVATIONS — on</button>
@@ -62,6 +68,18 @@ let tidalAmp = 3, tidalPeriod = 360, asym = 0.12;
 let netRate = 0.2;              // net sediment transport rate (asymmetry-driven)
 let showMorph = true, showFlow = true, showSpots = true;
 
+// channel geometry + connectivity + edge treatment
+let channelBed = 40, marshBed = 130;      // bed elevations (lower = deeper)
+let edgeInner = 0.35, edgeOuter = 0.78;   // bank zone (fraction of half-height)
+let channelEnd = 'deadend';               // 'deadend' | 'through'
+let edgeType = 'vegetated';               // 'hardened' | 'geotextile' | 'vegetated' | 'exposed'
+const EDGE_TYPES = {
+  hardened:   { resist: 0.98, trap: 0.05, label: 'hardened wall' },
+  geotextile: { resist: 0.85, trap: 0.30, label: 'geotextile bags' },
+  vegetated:  { resist: 0.55, trap: 0.85, label: 'vegetated edge' },
+  exposed:    { resist: 0.05, trap: 0.20, label: 'exposed earth' },
+};
+
 function smoothstep(t, e0, e1) { let x = constrain((t - e0) / (e1 - e0), 0, 1); return x * x * (3 - 2 * x); }
 
 // water level (m relative to mean) and its time derivative.
@@ -77,7 +95,10 @@ function chanF(y) {
   let t = Math.abs(y / height - 0.5) * 2;        // 0 channel centre, 1 marsh edge
   return 1 - 0.75 * smoothstep(t, 0.3, 0.72);    // 1 in channel, 0.25 on marsh
 }
-function landward(x) { return 1 - smoothstep(x / width, 0.6, 1.0); }  // ~1 until near the dead end, then -> 0
+function landward(x) {
+  if (channelEnd === 'through') return 1;              // channel continues: no dead-end decay
+  return 1 - smoothstep(x / width, 0.6, 1.0);          // dead-end: flow -> 0 at the land
+}
 
 // local M2 flow amplitude (spatial envelope)
 function flowAmplitude(x, y) {
@@ -103,7 +124,7 @@ function applyNetTransport() {
     let chanW = chanF(y);                 // transport lives in the channel
     for (let gx = 0; gx < GW; gx++) {
       let x = gx * BED_CELL;
-      let deadEnd = 1 - landward(x);      // 0 at inlet -> 1 at dead end (siltation zone)
+      let deadEnd = (channelEnd === 'deadend') ? (1 - landward(x)) : 0;  // through-channels don't silt up
       depoGrid[gx + gy * GW] += netRate * asym * deadEnd * chanW;
     }
   }
@@ -134,12 +155,15 @@ function addDeposit(x, y, amt) {
     depoGrid[nx + ny * GW] = constrain(depoGrid[nx + ny * GW] + amt * w, -BED_MAX, BED_MAX);
   }
 }
+function isBank(y) {
+  let t = Math.abs(y / height - 0.5) * 2;
+  return t > edgeInner && t < edgeOuter;
+}
 function defaultBed() {
   for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++) {
     let y = (gy * BED_CELL) / height;
     let t = Math.abs(y - 0.5) * 2;
-    let marsh = 130, channel = 40;
-    let z = marsh - (marsh - channel) * (1 - smoothstep(t, 0.35, 0.78));
+    let z = marshBed - (marshBed - channelBed) * (1 - smoothstep(t, edgeInner, edgeOuter));
     userBedGrid[gx + gy * GW] = constrain(z, 5, BED_MAX);
   }
 }
@@ -169,13 +193,17 @@ function updateParticles() {
     p.x += p.vx * 0.4;
     p.y += p.vy * 0.4;
 
-    // local sediment reworking — settle at slack, erode at peak flow (grainy patterning)
+    // local sediment reworking — settle at slack, erode at peak flow; the edge treatment
+    // governs the bank: resistance suppresses erosion, trapping promotes deposition.
+    let bank = isBank(p.y);
+    let resist = bank ? EDGE_TYPES[edgeType].resist : 0;
+    let trap = bank ? EDGE_TYPES[edgeType].trap : 1;
     let fs = Math.abs(flowAt(p.x, p.y));
     if (fs < settleThresh) {
       let s = 1 - fs / settleThresh;
-      if (random() < settleProb * s * 6) addDeposit(p.x, p.y, DEPO_AMOUNT);
+      if (random() < settleProb * s * 6 * trap) addDeposit(p.x, p.y, DEPO_AMOUNT);
     } else if (fs > erodeThresh) {
-      if (random() < erodeProb) addDeposit(p.x, p.y, -DEPO_AMOUNT);
+      if (random() < erodeProb * (1 - resist)) addDeposit(p.x, p.y, -DEPO_AMOUNT);
     }
 
     let age = simTime - p.born;
@@ -196,6 +224,13 @@ function setup() {
   document.getElementById('sPer').oninput = e => tidalPeriod = +e.target.value;
   document.getElementById('sAsy').oninput = e => asym = +e.target.value;
   document.getElementById('sSet').oninput = e => netRate = +e.target.value;
+  document.getElementById('sCW').oninput = e => { edgeInner = +e.target.value; depoGrid.fill(0); defaultBed(); };
+  document.getElementById('sCD').oninput = e => { channelBed = +e.target.value; depoGrid.fill(0); defaultBed(); };
+  document.getElementById('bEnd').onclick = e => { channelEnd = (channelEnd === 'deadend' ? 'through' : 'deadend'); e.target.classList.toggle('on', channelEnd === 'deadend'); e.target.textContent = 'CHANNEL END — ' + channelEnd; };
+  {
+    const order = ['hardened', 'geotextile', 'vegetated', 'exposed'];
+    document.getElementById('bEdge').onclick = e => { let i = order.indexOf(edgeType); edgeType = order[(i + 1) % 4]; e.target.textContent = 'EDGE — ' + EDGE_TYPES[edgeType].label; };
+  }
   document.getElementById('bMorph').onclick = e => { showMorph = !showMorph; e.target.classList.toggle('on', showMorph); e.target.textContent = 'MORPHOLOGY — ' + (showMorph?'on':'off'); };
   document.getElementById('bFlow').onclick = e => { showFlow = !showFlow; e.target.classList.toggle('on', showFlow); e.target.textContent = 'FLOW — ' + (showFlow?'on':'off'); };
   document.getElementById('bSpots').onclick = e => { showSpots = !showSpots; e.target.classList.toggle('on', showSpots); e.target.textContent = 'SPOT ELEVATIONS — ' + (showSpots?'on':'off'); };
@@ -311,6 +346,8 @@ function draw() {
   document.getElementById('vPer').textContent = tidalPeriod;
   document.getElementById('vAsy').textContent = asym.toFixed(2);
   document.getElementById('vSet').textContent = netRate.toFixed(2);
+  document.getElementById('vCW').textContent = edgeInner.toFixed(2);
+  document.getElementById('vCD').textContent = channelBed.toFixed(0);
 }
 
 function windowResized() {
