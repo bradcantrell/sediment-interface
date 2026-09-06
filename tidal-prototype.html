@@ -17,9 +17,12 @@
   #panel .val{float:right;color:#ffd166;}
   #panel button{width:100%;margin-top:8px;padding:6px;background:#22304a;color:#cdd6e4;border:1px solid #3a4a66;border-radius:5px;cursor:pointer;font-family:inherit;}
   #panel button.on{background:#7a4a12;border-color:#ffd166;color:#fff;}
-  #legend{position:absolute;right:14px;bottom:14px;font-size:11px;color:#8fa2bd;line-height:1.6;text-align:right;}
+  #legend{position:absolute;right:14px;bottom:14px;font-size:11px;color:#8fa2bd;line-height:1.6;text-align:right;background:rgba(20,26,36,.85);border:1px solid #2a3444;border-radius:8px;padding:8px 12px;}
   .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-left:4px;vertical-align:-1px;}
-  #brush-hint{position:absolute;left:14px;bottom:14px;font-size:11px;color:#8fa2bd;line-height:1.5;}
+  #tide-box{position:absolute;left:14px;bottom:14px;font-size:11px;color:#8fa2bd;line-height:1.5;background:rgba(20,26,36,.85);border:1px solid #2a3444;border-radius:8px;padding:8px 12px;}
+  #tide-bar{position:relative;width:200px;height:12px;background:#28303e;border-radius:2px;margin-top:6px;}
+  #tide-mid{position:absolute;top:0;left:50%;width:1px;height:100%;background:rgba(255,255,255,.45);}
+  #tide-fill{position:absolute;top:0;left:50%;width:0;height:100%;background:#50a0f0;border-radius:2px;}
 </style>
 </head>
 <body>
@@ -45,11 +48,15 @@
     <button id="bSpots" class="on">SPOT ELEVATIONS — on</button>
     <button id="bReset">RESET BED + SEDIMENT</button>
   </div>
+  <div id="tide-box">
+    <div>TIDE <span style="float:right;opacity:.7">drag carve · shift+drag fill</span></div>
+    <div id="tide-bar"><div id="tide-mid"></div><div id="tide-fill"></div></div>
+  </div>
   <div id="legend">
     accretion <span class="sw" style="background:#ffd166"></span> +60 &nbsp; erosion <span class="sw" style="background:#4cc9f0"></span> −60<br>
-    flow <span class="sw" style="background:#7ad0f0"></span> &nbsp; sediment <span class="sw" style="background:#ff44aa"></span> &nbsp; spot elev. <span style="color:#ffe6aa">+12</span>
+    flow <span class="sw" style="background:#7ad0f0"></span> &nbsp; sediment <span class="sw" style="background:#ff44aa"></span> &nbsp; spot elev. <span style="color:#ffe6aa">+12</span><br>
+    <span style="opacity:.7">sea ← inlet · land → right</span>
   </div>
-  <div id="brush-hint">sea ← inlet at left · land → dead end at right · drag = carve · shift+drag = fill</div>
 </div>
 <script>
 // ── TIDAL PRISM MODEL (analytic short-channel shallow-water limit) ──
@@ -323,17 +330,13 @@ function draw() {
     circle(p.x, p.y, 2.5);
   }
 
-  // tide gauge
+  // tide gauge (HTML box)
   let et = etaLevel();
-  push(); noStroke();
-  let gx = 16, gy = height - 40, gw = 180, gh = 12;
-  fill(40, 48, 62); rect(gx, gy, gw, gh);
-  let mid = gx + gw/2;
   let bar = constrain(et / tidalAmp, -1, 1);
-  if (bar >= 0) { fill(80, 160, 240); rect(mid, gy, bar*gw/2, gh); }
-  else { fill(230, 90, 90); rect(mid + bar*gw/2, gy, -bar*gw/2, gh); }
-  fill(255,255,255,60); rect(mid-1, gy, 2, gh);
-  pop();
+  let tf = document.getElementById('tide-fill');
+  let pct = Math.abs(bar) * 50;
+  if (bar >= 0) { tf.style.left = '50%'; tf.style.width = pct + '%'; tf.style.background = '#50a0f0'; }
+  else { tf.style.left = (50 - pct) + '%'; tf.style.width = pct + '%'; tf.style.background = '#e65a5a'; }
 
   // HUD
   let de = dEtaDt();
