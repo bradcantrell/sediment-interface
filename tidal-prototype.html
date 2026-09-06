@@ -47,6 +47,10 @@
     <input type="range" id="sCW" min="0.15" max="0.55" step="0.01" value="0.35">
     <label>CHANNEL BED ELEV <span class="val" id="vCD"></span></label>
     <input type="range" id="sCD" min="20" max="100" step="2" value="40">
+    <button id="bStruct">STRUCTURES — off</button>
+    <button id="bStructMat">STRUCTURE MATERIAL — hardened wall</button>
+    <label>STRUCTURE HEIGHT <span class="val" id="vSH"></span></label>
+    <input type="range" id="sSH" min="5" max="120" step="5" value="30">
     <button id="bEnd" class="on">CHANNEL END — dead-end</button>
     <button id="bEdge">EDGE — vegetated edge</button>
     <button id="bMorph" class="on">MORPHOLOGY — on</button>
@@ -74,7 +78,7 @@
     flow <span class="sw" style="background:#7ad0f0"></span> &nbsp; sediment <span class="sw" style="background:#ff44aa"></span> &nbsp; spot elev. <span style="color:#ffe6aa">+12</span>
   </div>
   <div id="hint-box">
-    drag carve &nbsp;·&nbsp; shift+drag fill &nbsp;&nbsp;|&nbsp;&nbsp; <span id="orient">sea ← inlet · land → right</span>
+    <span id="hint-action">drag dredge · shift+drag fill</span> &nbsp;&nbsp;|&nbsp;&nbsp; <span id="orient">sea ← inlet · land → right</span>
   </div>
 </div>
 <script>
@@ -89,11 +93,25 @@ const MORPH_SCALE = 60;          // net-change units for full morphology colour 
 
 let particles = [];
 let simTime = 0;
-let GW, GH, userBedGrid, depoGrid;
+let GW, GH, userBedGrid, depoGrid, structGrid, structMatGrid;
 let tidalAmp = 3, tidalPeriod = 360, asym = 0.12;
 let netRate = 0.2;              // net sediment transport rate (asymmetry-driven)
 let showMorph = true, showFlow = true, showSpots = true;
 let paused = false;
+
+// structures — drawable features that erode under the tide
+let structMode = false;                 // when on, drag draws a structure (else dredge/fill)
+let structMat = 'hardened';             // current structure material
+let structHeight = 30;                  // structure height (abstract units)
+let structStart = null;                 // rectangle-draw start point {x, y}
+const STRUCT_ERODE = 0.08;              // erosion rate per unit flow above threshold
+const MATERIALS = ['hardened', 'geotextile', 'vegetated', 'exposed'];
+const STRUCT_COLORS = {
+  hardened:   [168, 176, 188],
+  geotextile: [176, 142, 92],
+  vegetated:  [94, 160, 92],
+  exposed:    [150, 112, 72],
+};
 
 // channel geometry + connectivity + edge treatment
 let channelBed = 40, marshBed = 130;      // bed elevations (lower = deeper)
@@ -172,7 +190,14 @@ function depoAt(x, y) {
   let fx = gx - x0, fy = gy - y0;
   return depoGrid[x0+y0*GW]*(1-fx)*(1-fy) + depoGrid[x1+y0*GW]*fx*(1-fy) + depoGrid[x0+y1*GW]*(1-fx)*fy + depoGrid[x1+y1*GW]*fx*fy;
 }
-function bedZ(x, y) { return userBedAt(x, y) + depoAt(x, y); }
+function structAt(x, y) {
+  let gx = x / BED_CELL, gy = y / BED_CELL;
+  let x0 = constrain(floor(gx), 0, GW-1), y0 = constrain(floor(gy), 0, GH-1);
+  let x1 = min(x0+1, GW-1), y1 = min(y0+1, GH-1);
+  let fx = gx - x0, fy = gy - y0;
+  return structGrid[x0+y0*GW]*(1-fx)*(1-fy) + structGrid[x1+y0*GW]*fx*(1-fy) + structGrid[x0+y1*GW]*(1-fx)*fy + structGrid[x1+y1*GW]*fx*fy;
+}
+function bedZ(x, y) { return userBedAt(x, y) + depoAt(x, y) + structAt(x, y); }
 function addDeposit(x, y, amt) {
   let gx = floor(x / BED_CELL), gy = floor(y / BED_CELL);
   for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
@@ -249,6 +274,10 @@ function updateOrient() {
   let el = document.getElementById('orient');
   if (el) el.textContent = (channelEnd === 'through') ? 'sea ← inlet · passthrough' : 'sea ← inlet · land → right';
 }
+function updateHintAction() {
+  let el = document.getElementById('hint-action');
+  if (el) el.textContent = structMode ? 'drag to draw a structure' : 'drag dredge · shift+drag fill';
+}
 
 function setup() {
   let c = createCanvas(windowWidth, windowHeight);
@@ -256,6 +285,7 @@ function setup() {
   cellW = width / 60; cellH = height / 34;
   GW = max(1, floor(width / BED_CELL)); GH = max(1, floor(height / BED_CELL));
   userBedGrid = new Float32Array(GW*GH); depoGrid = new Float32Array(GW*GH);
+  structGrid = new Float32Array(GW*GH); structMatGrid = new Uint8Array(GW*GH);
   defaultBed();
   for (let i = 0; i < PARTICLE_COUNT; i++) particles.push(spawnParticle());
   document.getElementById('sAmp').oninput = e => tidalAmp = +e.target.value;
@@ -269,12 +299,16 @@ function setup() {
     const order = ['hardened', 'geotextile', 'vegetated', 'exposed'];
     document.getElementById('bEdge').onclick = e => { let i = order.indexOf(edgeType); edgeType = order[(i + 1) % 4]; e.target.textContent = 'EDGE — ' + EDGE_TYPES[edgeType].label; };
   }
+  document.getElementById('bStruct').onclick = e => { structMode = !structMode; e.target.classList.toggle('on', structMode); e.target.textContent = 'STRUCTURES — ' + (structMode ? 'on' : 'off'); updateHintAction(); };
+  document.getElementById('bStructMat').onclick = e => { let i = MATERIALS.indexOf(structMat); structMat = MATERIALS[(i + 1) % 4]; e.target.textContent = 'STRUCTURE MATERIAL — ' + EDGE_TYPES[structMat].label; };
+  document.getElementById('sSH').oninput = e => structHeight = +e.target.value;
   document.getElementById('bMorph').onclick = e => { showMorph = !showMorph; e.target.classList.toggle('on', showMorph); e.target.textContent = 'MORPHOLOGY — ' + (showMorph?'on':'off'); };
   document.getElementById('bFlow').onclick = e => { showFlow = !showFlow; e.target.classList.toggle('on', showFlow); e.target.textContent = 'FLOW — ' + (showFlow?'on':'off'); };
   document.getElementById('bSpots').onclick = e => { showSpots = !showSpots; e.target.classList.toggle('on', showSpots); e.target.textContent = 'SPOT ELEVATIONS — ' + (showSpots?'on':'off'); };
-  document.getElementById('bReset').onclick = () => { simTime = 0; depoGrid.fill(0); defaultBed(); };
+  document.getElementById('bReset').onclick = () => { simTime = 0; depoGrid.fill(0); structGrid.fill(0); structMatGrid.fill(0); defaultBed(); };
   document.getElementById('bPause').onclick = togglePause;
   updateOrient();
+  updateHintAction();
 }
 
 function paintBed(raise) {
@@ -286,7 +320,42 @@ function paintBed(raise) {
     let r = Math.sqrt(dx*dx + dy*dy);
     if (r > 2.5) continue;
     let amt = (raise ? 6 : -6) * (1 - r/3);
-    userBedGrid[nx + ny*GW] = constrain(userBedGrid[nx + ny*GW] + amt, 5, BED_MAX);
+    depoGrid[nx + ny*GW] = constrain(depoGrid[nx + ny*GW] + amt, -BED_MAX, BED_MAX);   // dredge (carve) / fill sediment
+  }
+}
+
+function placeStructure(a, b) {
+  let gx0 = constrain(floor(min(a.x, b.x) / BED_CELL), 0, GW-1);
+  let gx1 = constrain(floor(max(a.x, b.x) / BED_CELL), 0, GW-1);
+  let gy0 = constrain(floor(min(a.y, b.y) / BED_CELL), 0, GH-1);
+  let gy1 = constrain(floor(max(a.y, b.y) / BED_CELL), 0, GH-1);
+  let m = MATERIALS.indexOf(structMat);
+  for (let gy = gy0; gy <= gy1; gy++) for (let gx = gx0; gx <= gx1; gx++) {
+    let i = gx + gy*GW;
+    structGrid[i] = max(structGrid[i], structHeight);
+    structMatGrid[i] = m;
+  }
+}
+
+function erodeStructures() {
+  for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++) {
+    let i = gx + gy*GW;
+    if (structGrid[i] <= 0) continue;
+    let fs = Math.abs(flowAt(gx*BED_CELL, gy*BED_CELL));
+    if (fs > erodeThresh) {
+      let resist = EDGE_TYPES[MATERIALS[structMatGrid[i]]].resist;
+      structGrid[i] = max(0, structGrid[i] - STRUCT_ERODE * (fs - erodeThresh) * (1 - resist));
+    }
+  }
+}
+
+function mousePressed() {
+  if (structMode) structStart = { x: mouseX, y: mouseY };
+}
+function mouseReleased() {
+  if (structMode && structStart) {
+    placeStructure(structStart, { x: mouseX, y: mouseY });
+    structStart = null;
   }
 }
 
@@ -310,8 +379,9 @@ function draw() {
     simTime += 1;
     updateParticles();
     applyNetTransport();
+    erodeStructures();
   }
-  paintBed(keyIsDown(SHIFT));
+  if (!structMode) paintBed(keyIsDown(SHIFT));
 
   background(11, 14, 20);
 
@@ -338,7 +408,26 @@ function draw() {
     }
   }
 
-  // spot elevations — numeric bed elevation (initial + carve/fill + deposition)
+  // structures — drawable features (colour by material, fading as they erode)
+  noStroke();
+  for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++) {
+    let i = gx + gy*GW;
+    if (structGrid[i] <= 0) continue;
+    let c = STRUCT_COLORS[MATERIALS[structMatGrid[i]]];
+    let a = constrain((structGrid[i] / structHeight) * 200, 0, 200);
+    fill(c[0], c[1], c[2], a);
+    rect(gx*BED_CELL, gy*BED_CELL, BED_CELL, BED_CELL);
+  }
+
+  // structure draw preview
+  if (structMode && structStart) {
+    push(); noFill(); stroke(255, 230, 150, 200); strokeWeight(1.5);
+    let x0 = min(structStart.x, mouseX), y0 = min(structStart.y, mouseY);
+    rect(x0, y0, abs(mouseX - structStart.x), abs(mouseY - structStart.y));
+    pop();
+  }
+
+  // spot elevations — numeric bed elevation (initial + dredge/fill + deposition)
   if (showSpots) {
     push(); textAlign(CENTER, CENTER); textSize(9); stroke(10, 14, 20, 190); strokeWeight(2.5);
     let step = 5;
@@ -386,6 +475,7 @@ function draw() {
   document.getElementById('vSet').textContent = netRate.toFixed(2);
   document.getElementById('vCW').textContent = edgeInner.toFixed(2);
   document.getElementById('vCD').textContent = channelBed.toFixed(0);
+  document.getElementById('vSH').textContent = structHeight.toFixed(0);
 }
 
 function windowResized() {
@@ -393,6 +483,7 @@ function windowResized() {
   cellW = width / 60; cellH = height / 34;
   GW = max(1, floor(width / BED_CELL)); GH = max(1, floor(height / BED_CELL));
   userBedGrid = new Float32Array(GW*GH); depoGrid = new Float32Array(GW*GH);
+  structGrid = new Float32Array(GW*GH); structMatGrid = new Uint8Array(GW*GH);
   defaultBed();
 }
 </script>
