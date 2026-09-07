@@ -262,7 +262,7 @@ function updateParticles() {
     let bank = isBank(p.y);
     let resist = bank ? EDGE_TYPES[edgeType].resist : 0;
     let trap = bank ? EDGE_TYPES[edgeType].trap : 1;
-    let fs = Math.abs(flowAt(p.x, p.y));
+    let fs = Math.abs(velVx1);   // flowAt(p.x,p.y) already computed as velVx1 above
     if (fs < settleThresh) {
       let s = 1 - fs / settleThresh;
       if (random() < settleProb * s * 6 * trap) addDeposit(p.x, p.y, DEPO_AMOUNT);
@@ -594,6 +594,7 @@ function windowResized() {
   userBedGrid = new Float32Array(GW*GH); depoGrid = new Float32Array(GW*GH);
   structGrid = new Float32Array(GW*GH); structMatGrid = new Uint8Array(GW*GH); structIdGrid = new Int32Array(GW*GH).fill(-1);
   defaultBed();
+  structures.forEach((s, i) => rasterizeStructure(s, i));   // re-project placed structures onto the resized grid
   matchPanelWidth();
 }
 </script>
