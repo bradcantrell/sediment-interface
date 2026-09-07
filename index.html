@@ -141,8 +141,8 @@
     <div class="ctrl-row"><label>trail fade <span class="val" id="trail-fade-val">7</span></label><input type="range" id="trail-fade" min="2" max="40" value="7" step="1"></div>
     <div class="ctrl-row"><label>size <span class="val" id="particle-size-val">2</span></label><input type="range" id="particle-size" min="1" max="8" value="2" step="0.5"></div>
     <div class="ctrl-row2">
-      <label style="font-size:9px;color:rgba(255,255,255,0.4);">slow <input type="color" id="slow-color" value="#ff44aa"></label>
-      <label style="font-size:9px;color:rgba(255,255,255,0.4);">fast <input type="color" id="fast-color" value="#ddeeff"></label>
+      <label style="font-size:9px;color:rgba(255,255,255,0.4);">slow <input type="color" id="slow-color" value="#5c4a3a"></label>
+      <label style="font-size:9px;color:rgba(255,255,255,0.4);">fast <input type="color" id="fast-color" value="#e8d5b8"></label>
     </div>
     <div class="ctrl-row"><label>depo size <span class="val" id="depo-size-val">6</span></label><input type="range" id="depo-size" min="2" max="16" value="6" step="0.5"></div>
     <div class="ctrl-row2">
@@ -152,7 +152,7 @@
     <div class="ctrl-row"><label>color thresh <span class="val" id="color-thresh-val">0.5</span></label><input type="range" id="color-thresh" min="0.1" max="1.5" value="0.5" step="0.05"></div>
     <div class="ctrl-row"><label>flow scale <span class="val" id="flow-scale-val">25</span></label><input type="range" id="flow-scale" min="5" max="60" value="25" step="1"></div>
     <div class="ctrl-row"><label>flow dens <span class="val" id="flow-dens-val">8</span></label><input type="range" id="flow-dens" min="3" max="20" value="8" step="1"></div>
-    <div class="ctrl-row"><label>flow opacity <span class="val" id="flow-opacity-val">140</span></label><input type="range" id="flow-opacity" min="20" max="255" value="140" step="5"></div>
+    <div class="ctrl-row"><label>flow opacity <span class="val" id="flow-opacity-val">140</span></label><input type="range" id="flow-opacity" min="20" max="255" value="55" step="5"></div>
     <div class="ctrl-row"><label>particles <span class="val" id="particle-count-val">3000</span></label><input type="range" id="particle-count" min="500" max="8000" value="3000" step="100"></div>
 
     <div class="sect-label">toggles</div>
@@ -215,6 +215,7 @@ let p, divArr;
 
 let obstacles = [];
 let selectedIdx = -1;
+let solidMaskDirty = true;
 
 let ghostType = 'rect';
 let ghostRotation = 0;
@@ -266,11 +267,11 @@ let thumbDragLast = { x: 0, y: 0 };
 // Particle rendering controls
 let trailFade = 7;
 let particleSize = 2;
-let slowColor = '#ff44aa';
-let fastColor = '#ddeeff';
+let slowColor = '#5c4a3a';
+let fastColor = '#e8d5b8';
 let flowScale = 25;
 let flowDensity = 8;
-let flowOpacity = 140;
+let flowOpacity = 55;
 let colorThresh = 0.5;
 let particleCount = 3000;
 let depoSize = 6;
@@ -352,7 +353,7 @@ function depoZ(x, y) {
 
 function addDeposit(x, y, amt) {
   if (!depoGrid) return;
-  let i = Math.floor(x / DEPO_CELL), j = Math.floor(y / DEPO_CELL);
+  let i = Math.floor(x / DEPO_CELL - 0.5), j = Math.floor(y / DEPO_CELL - 0.5);
   for (let dj = -1; dj <= 1; dj++) {
     for (let di = -1; di <= 1; di++) {
       let ii = i + di, jj = j + dj;
@@ -419,6 +420,21 @@ function buildSolidMask() {
       }
     }
   }
+}
+
+function solidMaskIsDynamic() {
+  // The solid mask depends on isObstacleActive(ob), which varies with simTime
+  // whenever any clip has a finite duration. In that case the mask must be
+  // rebuilt every frame. With only full-duration clips (the default), it is
+  // static and the dirty flag alone governs rebuilds.
+  for (let ob of obstacles) {
+    let clips = ob.clips || [];
+    for (let c of clips) {
+      let dur = (c.dur == null) ? DEFAULT_OBJ_DUR : c.dur;
+      if (dur > 0 && dur < timelineDuration) return true;
+    }
+  }
+  return false;
 }
 
 function setBnd(b, x) {
@@ -513,11 +529,14 @@ function velocityStep() {
 // ─────────────────────────────────────────────
 // PARTICLES
 // ─────────────────────────────────────────────
+const velOut = { vx: 0, vy: 0 };
 function getVelocityAt(px, py) {
   let i = constrain(floor(px / cellW), 0, NX+1);
   let j = constrain(floor(py / cellH), 0, NY+1);
   let idx = IX(i, j);
-  return { vx: solid[idx] ? 0 : u[idx] * cellW, vy: solid[idx] ? 0 : v[idx] * cellH };
+  velOut.vx = solid[idx] ? 0 : u[idx] * cellW;
+  velOut.vy = solid[idx] ? 0 : v[idx] * cellH;
+  return velOut;
 }
 
 function timelineLoopTime() {
@@ -648,8 +667,9 @@ function updateParticles() {
           let hw = obW(ob) / 2, hh = obH(ob) / 2;
           if (Math.abs(rx) >= hw || Math.abs(ry) >= hh) continue;
           let penX = hw - Math.abs(rx), penY = hh - Math.abs(ry);
-          if (penX < penY) { nx = Math.sign(rx) * cosA; ny = Math.sign(rx) * sinA; pen = penX; }
-          else { nx = -Math.sign(ry) * sinA; ny = Math.sign(ry) * cosA; pen = penY; }
+          let theta = ob.rotation * PI / 180, cT = Math.cos(theta), sT = Math.sin(theta);
+          if (penX < penY) { nx = Math.sign(rx) * cT; ny = Math.sign(rx) * sT; pen = penX; }
+          else { nx = -Math.sign(ry) * sT; ny = Math.sign(ry) * cT; pen = penY; }
         }
         p.x += nx * (pen + 0.5); p.y += ny * (pen + 0.5);
         let vn = p.vx * nx + p.vy * ny;
@@ -890,7 +910,7 @@ function updateBedBuffer() {
     for (let py=0; py<height; py+=step) {
       let z=bedZ(px,py); if (z<=0) continue;
       let t=Math.min(1, z/bedMaxZ);
-      bedSurface.fill(40+t*80, 20+t*35, 10+t*15, 10+t*40);
+      bedSurface.fill(16+190*t, 30+145*t, 52+76*t, 10+t*40);
       bedSurface.rect(px,py,step,step);
     }
   }
@@ -1187,29 +1207,26 @@ function setup() {
     document.getElementById('erosion-prob').value=0.02;document.getElementById('erosion-prob-val').textContent='0.02';
   });
   document.getElementById('reset-render').addEventListener('click',function(){
-    trailFade=7;particleSize=2;slowColor='#ff44aa';fastColor='#ddeeff';
-    colorThresh=0.5;flowScale=25;flowDensity=8;flowOpacity=140;
+    trailFade=7;particleSize=2;slowColor='#5c4a3a';fastColor='#e8d5b8';
+    colorThresh=0.5;flowScale=25;flowDensity=8;flowOpacity=55;
     depoSize=6;depoRecentColor='#ffcc55';depoOldestColor='#6b4f3a';
     document.getElementById('depo-size').value=6;document.getElementById('depo-size-val').textContent='6';
     document.getElementById('depo-recent').value='#ffcc55';document.getElementById('depo-oldest').value='#6b4f3a';
     redrawDepoBuffer();
     document.getElementById('trail-fade').value=7;document.getElementById('trail-fade-val').textContent='7';
     document.getElementById('particle-size').value=2;document.getElementById('particle-size-val').textContent='2';
-    document.getElementById('slow-color').value='#ff44aa';document.getElementById('fast-color').value='#ddeeff';
+    document.getElementById('slow-color').value='#5c4a3a';document.getElementById('fast-color').value='#e8d5b8';
     document.getElementById('color-thresh').value=0.5;document.getElementById('color-thresh-val').textContent='0.50';
     document.getElementById('flow-scale').value=25;document.getElementById('flow-scale-val').textContent='25';
     document.getElementById('flow-dens').value=8;document.getElementById('flow-dens-val').textContent='8';
-    document.getElementById('flow-opacity').value=140;document.getElementById('flow-opacity-val').textContent='140';
+    document.getElementById('flow-opacity').value=55;document.getElementById('flow-opacity-val').textContent='55';
   });
 
   addObstacle(width*0.2, height*0.35, 'circle', 0);
   addObstacle(width*0.35, height*0.6, 'rect', 30);
   addObstacle(width*0.55, height*0.4, 'rect', -15);
-  // Default obstacles: spread across the loop so the timeline is meaningful out of
-  // the box; drag/resize them on the timeline bar to re-choreograph.
-  obstacles[0].clips = [{ start: 0, dur: timelineDuration / 3 }];
-  obstacles[1].clips = [{ start: timelineDuration / 3, dur: timelineDuration / 3 }];
-  obstacles[2].clips = [{ start: 2 * timelineDuration / 3, dur: timelineDuration / 3 }];
+  // Default obstacles occupy the full timeline (addObstacle already sets
+  // clips: [{start:0, dur:Infinity}], which is 'always active' regardless of loop length).
   ghostRotation = 30;
 
   // Timeline controls
@@ -1229,7 +1246,7 @@ function setup() {
 function draw() {
   if (!paused) {
     simTime += DT;
-    buildSolidMask();
+    if (solidMaskDirty || solidMaskIsDynamic()) { buildSolidMask(); solidMaskDirty = false; }
     velocityStep();
     updateParticles();
     drawDeposition();
@@ -1276,6 +1293,7 @@ function windowResized() {
   let ch = windowHeight;
   resizeCanvas(cw, ch);
   cellW = width/NX; cellH = height/NY;
+  solidMaskDirty = true;
 
   let oldDepo = depoBuffer; depoBuffer = createGraphics(width,height);
   if (oldDepo) { depoBuffer.image(oldDepo,0,0,width,height); oldDepo.remove(); }
@@ -1344,6 +1362,7 @@ function getResizeHandle(idx, mx, my) {
 }
 
 function resizeObstacle(rd, mx, my) {
+  solidMaskDirty = true;
   let ob = obstacles[rd.idx];
   if (ob.type === 'circle') {
     let r = max(3, dist(mx, my, ob.x, ob.y));
@@ -1416,15 +1435,17 @@ function hitTestObstacle(mx, my) {
 }
 
 function addObstacle(x, y, type, rot) {
-  obstacles.push({ type, x, y, w: ghostSize, h: ghostSize, rotation: rot||0, clips: [{ start: 0, dur: timelineDuration }] });
+  solidMaskDirty = true;
+  obstacles.push({ type, x, y, w: ghostSize, h: ghostSize, rotation: rot||0, clips: [{ start: 0, dur: Infinity }] });
 }
 
 function addPolyObstacle(pts) {
   let c = polyCentroid(pts);
-  obstacles.push({ type: 'poly', x: c.x, y: c.y, rotation: 0, points: pts.map(p => ({ x: p.x - c.x, y: p.y - c.y })), clips: [{ start: 0, dur: timelineDuration }] });
+  solidMaskDirty = true;
+  obstacles.push({ type: 'poly', x: c.x, y: c.y, rotation: 0, points: pts.map(p => ({ x: p.x - c.x, y: p.y - c.y })), clips: [{ start: 0, dur: Infinity }] });
 }
 
-function deleteObstacle(idx) { if (idx>=0&&idx<obstacles.length) obstacles.splice(idx,1); }
+function deleteObstacle(idx) { if (idx>=0&&idx<obstacles.length) { obstacles.splice(idx,1); solidMaskDirty = true; } }
 
 function mousePressed(event) {
   if (event && event.target) { let t=event.target; if (t.closest('#sidebar')||t.tagName==='BUTTON'||t.id==='bed-thumb'||t.id==='timeline-canvas') return; }
@@ -1514,8 +1535,8 @@ function mouseDragged(event) {
     return;
   }
   if (resizeDrag) { resizeObstacle(resizeDrag, mouseX, mouseY); return; }
-  if (polyVertexDrag) { let pv=obstacles[polyVertexDrag.idx]; let lp=polyToLocal(pv,mouseX,mouseY); pv.points[polyVertexDrag.vi]={x:lp.x,y:lp.y}; return; }
-  if (dragging&&selectedIdx>=0) { obstacles[selectedIdx].x=mouseX+dragOffX; obstacles[selectedIdx].y=mouseY+dragOffY; }
+  if (polyVertexDrag) { let pv=obstacles[polyVertexDrag.idx]; let lp=polyToLocal(pv,mouseX,mouseY); pv.points[polyVertexDrag.vi]={x:lp.x,y:lp.y}; solidMaskDirty = true; return; }
+  if (dragging&&selectedIdx>=0) { obstacles[selectedIdx].x=mouseX+dragOffX; obstacles[selectedIdx].y=mouseY+dragOffY; solidMaskDirty = true; }
 }
 
 function mouseReleased() { dragging=false; resizeDrag=null; polyVertexDrag=null; editingLongPt=-1; editingXSStation=null; }
@@ -1524,7 +1545,7 @@ function mouseWheel(event) {
   if (event && event.target && event.target.id==='timeline-canvas') return true;
   let delta=event.delta>0?5:-5;
   ghostRotation=(ghostRotation+delta)%360; if(ghostRotation<0)ghostRotation+=360;
-  if (selectedIdx>=0) obstacles[selectedIdx].rotation=ghostRotation;
+  if (selectedIdx>=0) { obstacles[selectedIdx].rotation=ghostRotation; solidMaskDirty = true; }
   return false;
 }
 
@@ -1548,7 +1569,7 @@ function keyPressed() {
   else if (key===']') { ghostSize=min(100,ghostSize+5); }
   else if ((key==='Backspace'||key==='Delete')&&selectedIdx>=0&&selectedClip>=0) {
     let ob = obstacles[selectedIdx];
-    if (ob && ob.clips && ob.clips.length > 0) { ob.clips.splice(selectedClip, 1); }
+    if (ob && ob.clips && ob.clips.length > 0) { ob.clips.splice(selectedClip, 1); solidMaskDirty = true; }
     selectedClip = -1; selectedIdx = -1;
     drawTimeline();
   }
@@ -1704,6 +1725,7 @@ function timelineMouseDown(e) {
       let clickT = x2t(mx);
       c.dur = DEFAULT_OBJ_DUR;
       c.start = ((clickT - DEFAULT_OBJ_DUR / 2) % T + T) % T;
+      solidMaskDirty = true;
       selectedClip = ci;
       tlDrag = { mode: 'move', obstacleIdx: row, clipIdx: ci, grabX: mx, origStart: c.start, origDur: c.dur };
       drawTimeline();
@@ -1737,6 +1759,7 @@ function timelineMouseMove(e) {
         let ob = obstacles[tlDrag.obstacleIdx];
         let clip = { start: x2t(Math.min(tlDrag.grabX, mx)), dur: 1 };
         ob.clips.push(clip);
+        solidMaskDirty = true;
         tlDrag.mode = 'create';
         tlDrag.clipIdx = ob.clips.length - 1;
         selectedIdx = tlDrag.obstacleIdx;
@@ -1752,6 +1775,7 @@ function timelineMouseMove(e) {
       let tb = x2t(Math.max(tlDrag.grabX, mx));
       clip.start = ((ta % T) + T) % T;
       clip.dur = Math.max(1, Math.min(T, tb - ta));
+      solidMaskDirty = true;
       drawTimeline();
       return;
     }
@@ -1768,6 +1792,7 @@ function timelineMouseMove(e) {
       let nd = Math.min(T, tlDrag.origDur - dx);
       if (nd >= 1) { clip.dur = nd; clip.start = ((tlDrag.origStart + dx) % T + T) % T; }
     }
+    solidMaskDirty = true;
     drawTimeline();
     return;
   }
