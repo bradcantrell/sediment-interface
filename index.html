@@ -399,6 +399,27 @@ function computeUserBedZ(x, y) {
 // station high on the transect had almost no usable band left, so its strip was effectively
 // smaller and clicks clamped against the edge instead of drawing where they were aimed.
 const XS_WINDOW = 160;
+const XS_STRIP_W = 60;
+// The single source of truth for a profile strip's rectangle. Draw and hit-test both call this,
+// so a strip can never be visible somewhere it is not clickable.
+function xsStrip(si) {
+  let pt = bedPoints[si];
+  let stripH = 160, stripY = height - stripH;
+  let sx = constrain(pt.x - XS_STRIP_W / 2, 0, width - XS_STRIP_W);
+  return { pt: pt, sx: sx, w: XS_STRIP_W, stripY: stripY, stripH: stripH };
+}
+// The station whose strip contains this point, or -1. Nearest station wins when strips overlap.
+function xsStripAt(mx, my) {
+  let best = -1, bestD = Infinity;
+  for (let i = 0; i < bedPoints.length; i++) {
+    let g = xsStrip(i);
+    if (my >= g.stripY) continue;
+    if (mx < g.sx || mx > g.sx + g.w) continue;
+    let d = abs(mx - bedPoints[i].x);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
 function xsWindowLo(baseZ) { return Math.max(-80, baseZ - XS_WINDOW / 2); }
 function xsAbsToVx(sx, w, absZ, baseZ) {
   let lo = xsWindowLo(baseZ);
@@ -1185,7 +1206,7 @@ function drawBedProfile() {
     // Keep the strip fully on canvas. Centred on a station near either edge, half the
     // strip fell off-screen, so the high end (or low end) could not be clicked at all --
     // which made it impossible to set a profile back to its transect elevation there.
-    let pt=bedPoints[si], baseZ=pt.z, sx=constrain(pt.x-xStripW/2, 0, width-xStripW);
+    let _gs=xsStrip(si), pt=_gs.pt, baseZ=pt.z, sx=_gs.sx;
     noStroke(); fill(si===activeXSection?'rgba(40,35,55,0.85)':'rgba(25,22,40,0.7)'); rect(sx,0,xStripW,stripY);
     stroke(40,40,55,40); strokeWeight(0.5);
     for (let gz=20; gz<=bedMaxZ; gz+=20) { let gx=sx+xStripW-(gz/bedMaxZ)*xStripW; line(gx,0,gx,stripY); }
@@ -1776,11 +1797,10 @@ function mousePressed(event) {
       updateBedBuffer(); updateBedThumb(); return;
     }
 
-    let closestIdx=-1, closestDist=Infinity;
-    for (let i=0;i<bedPoints.length;i++) { let d=abs(mouseX-bedPoints[i].x); if(d<40&&d<closestDist){closestDist=d;closestIdx=i;} }
+    let closestIdx = xsStripAt(mouseX, mouseY);
     if (closestIdx>=0) {
       activeXSection=closestIdx;
-      let pt=bedPoints[closestIdx], xStripW=60, sx=constrain(pt.x-xStripW/2, 0, width-xStripW);
+      let _g=xsStrip(closestIdx), pt=_g.pt, xStripW=_g.w, sx=_g.sx;
       let xsData=bedXSections.find(xs=>xs.x===pt.x);
       if (xsData&&xsData.points.length>0) {
         for (let pi=0;pi<xsData.points.length;pi++) {
@@ -1788,7 +1808,7 @@ function mousePressed(event) {
           if (dist(mouseX,mouseY,vx,vy)<10) { editingXSStation={stationIdx:closestIdx,pointIdx:pi}; return; }
         }
       }
-      if (mouseX>=sx&&mouseX<=sx+xStripW&&mouseY<stripY) {
+      if (mouseX>=sx&&mouseX<=sx+xStripW&&mouseY<_g.stripY) {
         // Signed: a transverse profile is an offset from the transect at that station, so it
         // must be able to cut BELOW it. Clamping to >= 0 let a section only ever add height,
         // which left every profile floating above the transect and raised the whole bed above
