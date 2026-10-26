@@ -1268,17 +1268,24 @@ function updateBedThumb() {
   }
   cells.sort(function (p1, p2) { return p1.depth - p2.depth; });
 
+  // Hidden-line wireframe. Each quad is filled with the background colour before its edges are
+  // stroked, and quads are drawn back to front, so anything behind a nearer quad is painted over
+  // and only visible edges survive. Cheap, and it reads as a wireframe terrain rather than a
+  // solid surface -- no polygon shading.
   for (let cell of cells) {
     let t = Math.min(1, Math.max(0, (cell.z - zMin) / span));
-    let rr = Math.round(40 + 215 * t), gg = Math.round(90 + 130 * t), bb = Math.round(150 - 110 * t);
+    let rr = Math.round(90 + 165 * t), gg = Math.round(150 + 90 * t), bb = Math.round(210 - 120 * t);
     let A = toScreen(cell.a), B = toScreen(cell.b), C = toScreen(cell.c), D = toScreen(cell.d);
     ctx.beginPath();
     ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.lineTo(C.x, C.y); ctx.lineTo(D.x, D.y);
     ctx.closePath();
-    ctx.fillStyle = 'rgba(' + rr + ',' + gg + ',' + bb + ',' + Math.round(110 + 110 * t) + ')';
+    ctx.fillStyle = 'rgba(10,12,22,1)';       // occludes whatever is behind this quad
     ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,' + (0.05 + 0.12 * t).toFixed(3) + ')';
-    ctx.lineWidth = 0.4;
+    // stroke only the two "near" edges so shared edges are not drawn twice
+    ctx.beginPath();
+    ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.lineTo(C.x, C.y);
+    ctx.strokeStyle = 'rgba(' + rr + ',' + gg + ',' + bb + ',' + (0.35 + 0.6 * t).toFixed(3) + ')';
+    ctx.lineWidth = 0.7;
     ctx.stroke();
   }
 
@@ -1402,12 +1409,18 @@ function setup() {
   document.getElementById('flow-opacity').addEventListener('input', function(){flowOpacity=parseInt(this.value);document.getElementById('flow-opacity-val').textContent=flowOpacity;});
   document.getElementById('particle-count').addEventListener('input', function(){particleCount=parseInt(this.value);document.getElementById('particle-count-val').textContent=particleCount;while(particles.length+deposited.length<particleCount)particles.push(spawnParticle());});
   document.getElementById('depo-size').addEventListener('input', function(){ depoSize=parseFloat(this.value); document.getElementById('depo-size-val').textContent=depoSize; redrawDepoBuffer(); });
+  // Clicking a sidebar control leaves focus on it, so a following Space re-activates the
+  // button (or nudges a slider) instead of reaching p5's keyPressed and toggling pause.
+  document.addEventListener('click', function(e){
+    let el = e.target;
+    if (el && el.closest && el.closest('#sidebar') && el.blur) el.blur();
+  });
   document.getElementById('toggle-3d').addEventListener('click',function(){
     thumbBig=!thumbBig;
     let c=document.getElementById('bed-thumb');
-    if(thumbBig){ c.width=windowWidth; c.height=windowHeight;
+    if(thumbBig){ c.width=Math.max(320, windowWidth-270); c.height=windowHeight;
       c.style.position='fixed'; c.style.left='0'; c.style.top='0';
-      c.style.width='100vw'; c.style.height='100vh'; c.style.zIndex='60';
+      c.style.width='calc(100vw - 270px)'; c.style.height='100vh'; c.style.zIndex='40';
       c.style.border='none'; c.style.background='#05060c'; }
     else { c.width=250; c.height=175;
       c.style.position=''; c.style.left=''; c.style.top='';
