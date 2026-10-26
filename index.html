@@ -132,6 +132,7 @@
 
     <div class="sect-label">physics <button class="reset-btn" id="reset-physics">reset</button></div>
     <div class="ctrl-row"><label>inflow <span class="val" id="inflow-val">2.5</span></label><input type="range" id="inflow" min="0.5" max="5" value="2.5" step="0.1"></div>
+    <div class="ctrl-row"><label>friction <span class="val" id="friction-val">0.00</span></label><input type="range" id="friction" min="0" max="3" value="0" step="0.05"></div>
     <div class="ctrl-row"><label>settle thresh <span class="val" id="settle-thresh-val">0.20</span></label><input type="range" id="settle-thresh" min="0.05" max="0.8" value="0.20" step="0.01"></div>
     <div class="ctrl-row"><label>settle prob <span class="val" id="settle-prob-val">0.012</span></label><input type="range" id="settle-prob" min="0.002" max="0.08" value="0.012" step="0.001"></div>
     <div class="ctrl-row"><label>erode thresh <span class="val" id="erosion-thresh-val">1.00</span></label><input type="range" id="erosion-thresh" min="0.2" max="3.0" value="1.0" step="0.01"></div>
@@ -196,6 +197,10 @@ let inflowVel = 2.5;
 let settleThresh = 0.20;
 let erosionThresh = 1.0;
 let settleProb = 0.012;
+// Bed friction (1/s). A uniform drag on the solved field: it slows the flow, which raises
+// deposition and lowers erosion through the existing thresholds. At 0 the field is frictionless
+// and the only deposition path is speed < settleThresh, which the field almost never meets.
+let friction = 0.0;
 // Fraction of settleProb used by the on-bed settle chance (see updateParticles). Sized so a
 // particle entering at the inflow can cross the reach rather than depositing within a second.
 const BED_SETTLE_ON_BED = 0.25;
@@ -530,6 +535,13 @@ function velocityStep() {
   advect(1, u, uPrev, uPrev, vPrev);
   advect(2, v, vPrev, uPrev, vPrev);
   project(u, v, p, divArr);
+
+  // Bed friction: exponential drag per step. With none, the field keeps near-inflow speed
+  // everywhere, particles never drop below settleThresh, and almost nothing deposits.
+  if (friction > 0) {
+    let damp = Math.exp(-friction * DT);
+    for (let q = 0; q < u.length; q++) { u[q] *= damp; v[q] *= damp; }
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -1273,6 +1285,7 @@ function setup() {
   document.getElementById('flow-opacity').addEventListener('input', function(){flowOpacity=parseInt(this.value);document.getElementById('flow-opacity-val').textContent=flowOpacity;});
   document.getElementById('particle-count').addEventListener('input', function(){particleCount=parseInt(this.value);document.getElementById('particle-count-val').textContent=particleCount;while(particles.length+deposited.length<particleCount)particles.push(spawnParticle());});
   document.getElementById('depo-size').addEventListener('input', function(){ depoSize=parseFloat(this.value); document.getElementById('depo-size-val').textContent=depoSize; redrawDepoBuffer(); });
+  document.getElementById('friction').addEventListener('input', function(){friction=parseFloat(this.value);document.getElementById('friction-val').textContent=friction.toFixed(2);});
   document.getElementById('depo-recent').addEventListener('input', function(){ depoRecentColor=this.value; redrawDepoBuffer(); });
   document.getElementById('depo-oldest').addEventListener('input', function(){ depoOldestColor=this.value; redrawDepoBuffer(); });
 
@@ -1352,7 +1365,9 @@ function draw() {
   image(depoBuffer, 0, 0);
 
   // Bed surface — behind trails so trails paint over it
-  if (!bedMode) image(bedSurface, 0, 0);
+  // Always composite the height gradient: when drawing a transect the underlay is exactly
+  // what shows the elevation the particles are reacting to, and hiding it left bed mode blind.
+  image(bedSurface, 0, 0);
 
   if (!bedMode) {
     trailBuffer.push(); trailBuffer.noStroke(); trailBuffer.fill(10,10,20,trailFade); trailBuffer.rect(0,0,width,height); trailBuffer.pop();
