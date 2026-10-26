@@ -249,6 +249,9 @@ let showFlow = false;
 let showGrid = false;
 let showHelp = true;
 let showElev = false;
+// Elevation display cycles on repeated presses:
+//   1 grid  2 grid + subdivisions  3 local highs (within 3 cells)  4 local lows  0 off
+let elevMode = 0;
 let simTime = 0;
 
 // Bed profile
@@ -809,22 +812,52 @@ function drawFlowField() {
 }
 
 function drawSpotElevations() {
-  if (!showElev) return;
+  if (elevMode === 0) return;
   let step = max(1, floor(min(NX,NY)/flowDensity));
-  noStroke();
-  textAlign(CENTER, BOTTOM); textSize(9);
-  for (let j=step; j<=NY; j+=step) {
-    for (let i=step; i<=NX; i+=step) {
-      let idx = IX(i,j);
-      if (solid[idx]) continue;
-      let px = i*cellW, py = j*cellH;
-      let z = bedZ(px, py);   // combined bed + deposition elevation
-      if (z > 0) {
-        fill(255,215,110,200); ellipse(px, py, 4, 4);
-        fill(255,235,170,235); text(Math.round(z), px, py - 4);
-      } else {
-        fill(255,255,255,70); ellipse(px, py, 2, 2);
+  let fine = max(1, floor(step/2));
+  noStroke(); textAlign(CENTER, BOTTOM);
+  // Tenths: bedZ() is a float throughout, so a tenth of a bed unit (~0.3 mm at this scale)
+  // is already resolved. The old readout rounded it away.
+  const put = (i, j, sz, bold) => {
+    let idx = IX(i, j);
+    if (solid[idx]) return;
+    let px = i*cellW, py = j*cellH;
+    let z = bedZ(px, py);
+    if (z > 0) {
+      fill(255,215,110,180); ellipse(px, py, 3, 3);
+      fill(255,235,170, bold ? 240 : 190); textSize(sz);
+      text(z.toFixed(1), px, py - 3);
+    } else if (elevMode === 1) {
+      fill(255,255,255,60); ellipse(px, py, 2, 2);
+    }
+  };
+  const isExtreme = (i, j, wantHigh) => {
+    let z0 = bedZ(i*cellW, j*cellH);
+    for (let dj=-3; dj<=3; dj++) {
+      for (let di=-3; di<=3; di++) {
+        if (!di && !dj) continue;
+        let ii=i+di, jj=j+dj;
+        if (ii<1||jj<1||ii>NX||jj>NY) continue;
+        let z = bedZ(ii*cellW, jj*cellH);
+        if (wantHigh ? z > z0 + 1e-6 : z < z0 - 1e-6) return false;
       }
+    }
+    return true;
+  };
+  if (elevMode === 1) {
+    for (let j=step; j<=NY; j+=step) for (let i=step; i<=NX; i+=step) put(i, j, 9, true);
+  } else if (elevMode === 2) {
+    for (let j=step; j<=NY; j+=step) for (let i=step; i<=NX; i+=step) put(i, j, 10, true);
+    for (let j=fine; j<=NY; j+=fine) for (let i=fine; i<=NX; i+=fine) {
+      if (i % step && j % step) put(i, j, 7, false);
+    }
+  } else if (elevMode === 3) {
+    for (let j=step; j<=NY; j+=step) for (let i=step; i<=NX; i+=step) {
+      if (bedZ(i*cellW, j*cellH) > 0 && isExtreme(i, j, true)) put(i, j, 10, true);
+    }
+  } else {
+    for (let j=step; j<=NY; j+=step) for (let i=step; i<=NX; i+=step) {
+      if (bedZ(i*cellW, j*cellH) > 0 && isExtreme(i, j, false)) put(i, j, 10, true);
     }
   }
 }
@@ -998,7 +1031,10 @@ function drawBedProfile() {
 
   let xStripW=60;
   for (let si=0; si<bedPoints.length; si++) {
-    let pt=bedPoints[si], baseZ=pt.z, sx=pt.x-xStripW/2;
+    // Keep the strip fully on canvas. Centred on a station near either edge, half the
+    // strip fell off-screen, so the high end (or low end) could not be clicked at all --
+    // which made it impossible to set a profile back to its transect elevation there.
+    let pt=bedPoints[si], baseZ=pt.z, sx=constrain(pt.x-xStripW/2, 0, width-xStripW);
     noStroke(); fill(si===activeXSection?'rgba(40,35,55,0.85)':'rgba(25,22,40,0.7)'); rect(sx,0,xStripW,stripY);
     stroke(40,40,55,40); strokeWeight(0.5);
     for (let gz=20; gz<=bedMaxZ; gz+=20) { let gx=sx+xStripW-(gz/bedMaxZ)*xStripW; line(gx,0,gx,stripY); }
@@ -1216,7 +1252,7 @@ function setup() {
   document.getElementById('toggle-flow').addEventListener('click',function(){showFlow=!showFlow;updateToggles();});
   document.getElementById('toggle-bed').addEventListener('click',function(){bedMode=!bedMode;if(bedMode)paused=true;else paused=false;updateToggles();});
   document.getElementById('toggle-pause').addEventListener('click',function(){paused=!paused;updateToggles();});
-  document.getElementById('toggle-elev').addEventListener('click',function(){showElev=!showElev;updateToggles();});
+  document.getElementById('toggle-elev').addEventListener('click',function(){elevMode=(elevMode+1)%5;showElev=elevMode>0;updateToggles();});
   updateToggles();
 
   // Reset buttons
@@ -1291,6 +1327,10 @@ function draw() {
   }
 
   drawFlowField();
+  // Keep the bed gradient current while sediment builds up: without this the ramp was only
+  // rebuilt on bed edits, so accumulation showed as dots but never as topography. The buffer
+  // resamples ~20k points, so throttle it.
+  if (frameCount % 20 === 0 && deposited.length > 0) updateBedBuffer();
   drawSpotElevations();
   drawParticles();
   drawObstacles();
@@ -1491,7 +1531,7 @@ function mousePressed(event) {
     for (let i=0;i<bedPoints.length;i++) { let d=abs(mouseX-bedPoints[i].x); if(d<40&&d<closestDist){closestDist=d;closestIdx=i;} }
     if (closestIdx>=0) {
       activeXSection=closestIdx;
-      let pt=bedPoints[closestIdx], xStripW=60, sx=pt.x-xStripW/2;
+      let pt=bedPoints[closestIdx], xStripW=60, sx=constrain(pt.x-xStripW/2, 0, width-xStripW);
       let xsData=bedXSections.find(xs=>xs.x===pt.x);
       if (xsData&&xsData.points.length>0) {
         for (let pi=0;pi<xsData.points.length;pi++) {
@@ -1550,7 +1590,7 @@ function mouseDragged(event) {
       let si=editingXSStation.stationIdx, pi=editingXSStation.pointIdx;
       let xsData=bedXSections.find(xs=>xs.x===bedPoints[si].x);
       if (xsData&&pi<xsData.points.length) {
-        let xStripW=60, sx=bedPoints[si].x-xStripW/2;
+        let xStripW=60, sx=constrain(bedPoints[si].x-xStripW/2, 0, width-xStripW);
         let relX=constrain((mouseX-sx)/xStripW,0,1), absZ=Math.max(0,(1-relX)*bedMaxZ);
         xsData.points[pi].z=absZ-bedPoints[si].z;
         xsData.points[pi].y=constrain(mouseY/stripY*height,0,height);
