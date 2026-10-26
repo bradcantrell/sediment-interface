@@ -166,6 +166,7 @@
       <button id="toggle-pause" class="tg-off">pause</button>
       <button id="toggle-elev" class="tg-off">elev</button>
       <button id="toggle-fric" class="tg-off">fric</button>
+      <button id="toggle-3d" class="tg-off">3d</button>
     </div>
 
     <div class="sect-label">timeline <button id="toggle-timeline" class="reset-btn" style="font-size:7px;">off</button></div>
@@ -1197,98 +1198,127 @@ function drawBedProfile() {
 }
 
 // ── Isometric bed thumbnail ──
+// 3D terrain mesh. A subdivided surface sampled from bedZ(), so it reflects the drawn transect,
+// the transverse profiles AND accumulated deposition without knowing about any of them
+// separately. Refreshed on a slower cadence than the particles.
+let thumbBig = false;
+
 function updateBedThumb() {
-  let canvas=document.getElementById('bed-thumb'), ctx=bedThumb, TW=canvas.width, TH=canvas.height;
-  ctx.clearRect(0,0,TW,TH);
-  if (bedPoints.length < 2) { ctx.fillStyle='rgba(255,255,255,0.08)'; ctx.font='10px Courier New'; ctx.textAlign='center'; ctx.fillText('no bed defined',TW/2,TH/2); return; }
-  let margin=18, viewW=TW-margin*2, viewH=TH-margin*2, bedMaxZ=160;
-  let ax=thumbAngleX*PI/180, ay=thumbAngleY*PI/180;
-  let cosAX=cos(ax), sinAX=sin(ax), cosAY=cos(ay), sinAY=sin(ay);
-  let sortedPts=[...bedPoints].sort((a,b)=>a.x-b.x);
-  let xMin=sortedPts[0].x, xMax=sortedPts[sortedPts.length-1].x, xRange=xMax-xMin||1;
+  let canvas = document.getElementById('bed-thumb'), ctx = bedThumb;
+  if (!canvas || !ctx) return;
+  let TW = canvas.width, TH = canvas.height;
+  ctx.clearRect(0, 0, TW, TH);
+  ctx.fillStyle = 'rgba(10,12,22,0.96)';
+  ctx.fillRect(0, 0, TW, TH);
 
-  function projectRaw(x_px,y_px,z_px) {
-    let nx=(x_px-xMin)/xRange-0.5, ny=(y_px/height-0.5)*0.45;
-    let zScale=parseFloat(document.getElementById('z-scale').value)/100;
-    let nz=z_px/bedMaxZ*zScale;
-    let rx=nx*cosAX-ny*sinAX, ry=nx*sinAX+ny*cosAX;
-    return {x:rx, y:ry*cosAY-nz*sinAY, depth:ry*sinAY+nz*cosAY};
+  let margin = 12, viewW = Math.max(10, TW - margin * 2), viewH = Math.max(10, TH - margin * 2);
+  let bedMaxZ = 160;
+  let ax = thumbAngleX * PI / 180, ay = thumbAngleY * PI / 180;
+  let cosAX = Math.cos(ax), sinAX = Math.sin(ax), cosAY = Math.cos(ay), sinAY = Math.sin(ay);
+  let zScaleEl = document.getElementById('z-scale');
+  let zScale = zScaleEl ? parseFloat(zScaleEl.value) / 100 : 0.28;
+
+  function projectRaw(x_px, y_px, z_px) {
+    let nx = (x_px / width - 0.5), ny = (y_px / height - 0.5) * 0.55, nz = (z_px / bedMaxZ) * zScale;
+    let rx = nx * cosAX - ny * sinAX, ry = nx * sinAX + ny * cosAX;
+    return { x: rx, y: ry * cosAY - nz * sinAY, depth: ry * sinAY + nz * cosAY };
   }
 
-  let allPts=[];
-  for (let pt of sortedPts) allPts.push(projectRaw(pt.x,height/2,pt.z));
-  for (let xs of bedXSections) {
-    let station=sortedPts.find(p=>p.x===xs.x); if(!station) continue;
-    for (let rp of xs.points) allPts.push(projectRaw(xs.x,rp.y,station.z+rp.z));
-  }
-  let bxMin=Infinity,bxMax=-Infinity,byMin=Infinity,byMax=-Infinity;
-  for (let p of allPts) { if(p.x<bxMin)bxMin=p.x; if(p.x>bxMax)bxMax=p.x; if(p.y<byMin)byMin=p.y; if(p.y>byMax)byMax=p.y; }
-  let scale=min(viewW/(bxMax-bxMin||1), viewH/(byMax-byMin||1))*0.88;
-  let cx=(bxMin+bxMax)/2, cy=(byMin+byMax)/2;
-
-  function project(x_px,y_px,z_px) {
-    let raw=projectRaw(x_px,y_px,z_px);
-    return {x:margin+viewW/2+(raw.x-cx)*scale, y:margin+viewH/2+(raw.y-cy)*scale, depth:raw.depth};
-  }
-
-  ctx.fillStyle='rgba(10,12,22,0.92)'; ctx.fillRect(0,0,TW,TH);
-  ctx.strokeStyle='rgba(255,255,255,0.04)'; ctx.lineWidth=0.5;
-  for (let gz=0; gz<=bedMaxZ; gz+=40) { let p0=project(xMin,height/2,gz), p1=project(xMax,height/2,gz); ctx.beginPath(); ctx.moveTo(p0.x,p0.y); ctx.lineTo(p1.x,p1.y); ctx.stroke(); }
-
-  let ribs=[];
-  for (let pt of sortedPts) {
-    let xsData=bedXSections.find(xs=>xs.x===pt.x); if(!xsData||xsData.points.length<2) continue;
-    let pts=[...xsData.points].sort((a,b)=>a.y-b.y), ribPts=[], maxDepth=-Infinity;
-    for (let rp of pts) { let proj=project(pt.x,rp.y,pt.z+rp.z); ribPts.push(proj); if(proj.depth>maxDepth)maxDepth=proj.depth; }
-    ribs.push({station:pt,points:ribPts,depth:maxDepth});
-  }
-  let sortedRibs=[...ribs].sort((a,b)=>a.depth-b.depth);
-
-  let ySamples=16, yGrid=[];
-  for (let yi=0; yi<=ySamples; yi++) yGrid.push(yi/ySamples*height);
-  let sampledRibs=[];
-  for (let rib of ribs) {
-    let xsData=bedXSections.find(xs=>xs.x===rib.station.x), ribPts=[...xsData.points].sort((a,b)=>a.y-b.y), samples=[];
-    for (let sy of yGrid) {
-      let zAbs=rib.station.z;
-      if(sy<=ribPts[0].y) zAbs+=ribPts[0].z;
-      else if(sy>=ribPts[ribPts.length-1].y) zAbs+=ribPts[ribPts.length-1].z;
-      else for(let k=0;k<ribPts.length-1;k++) if(ribPts[k].y<=sy&&sy<=ribPts[k+1].y){let t=(sy-ribPts[k].y)/(ribPts[k+1].y-ribPts[k].y);zAbs+=ribPts[k].z+t*(ribPts[k+1].z-ribPts[k].z);break;}
-      samples.push(project(rib.station.x,sy,zAbs));
+  const NXM = 26, NYM = 18;
+  let grid = [], zMin = Infinity, zMax = -Infinity;
+  for (let j = 0; j <= NYM; j++) {
+    let row = [];
+    for (let i2 = 0; i2 <= NXM; i2++) {
+      let px = i2 / NXM * width, py = j / NYM * height;
+      let z = bedZ(px, py);
+      if (z < zMin) zMin = z;
+      if (z > zMax) zMax = z;
+      row.push({ p: projectRaw(px, py, z), z: z });
     }
-    sampledRibs.push({station:rib.station,samples,depth:rib.depth});
+    grid.push(row);
   }
-  sampledRibs.sort((a,b)=>a.depth-b.depth);
-  let sampledByX=[...sampledRibs].sort((a,b)=>a.station.x-b.station.x);
-  for (let ri=0; ri<sampledByX.length-1; ri++) {
-    let rA=sampledByX[ri], rB=sampledByX[ri+1], avgDepth=(rA.depth+rB.depth)/2;
-    ctx.strokeStyle=`rgba(255,200,130,${0.08+avgDepth*0.14})`; ctx.lineWidth=0.6;
-    for (let si=0; si<rA.samples.length; si++) { ctx.beginPath(); ctx.moveTo(rA.samples[si].x,rA.samples[si].y); ctx.lineTo(rB.samples[si].x,rB.samples[si].y); ctx.stroke(); }
+  if (!isFinite(zMin)) { zMin = 0; zMax = 0; }
+
+  let bxMin = Infinity, bxMax = -Infinity, byMin = Infinity, byMax = -Infinity;
+  for (let row of grid) {
+    for (let q of row) {
+      if (q.p.x < bxMin) bxMin = q.p.x;
+      if (q.p.x > bxMax) bxMax = q.p.x;
+      if (q.p.y < byMin) byMin = q.p.y;
+      if (q.p.y > byMax) byMax = q.p.y;
+    }
+  }
+  let span = Math.max(0.001, zMax - zMin);
+  let scale = Math.min(viewW / ((bxMax - bxMin) || 0.001), viewH / ((byMax - byMin) || 0.001)) * 0.84;
+  let cx = (bxMin + bxMax) / 2, cy = (byMin + byMax) / 2;
+  function toScreen(q) {
+    return { x: margin + viewW / 2 + (q.p.x - cx) * scale, y: margin + viewH / 2 + (q.p.y - cy) * scale };
   }
 
-  let spinePts=[];
-  for (let pt of sortedPts) spinePts.push({...project(pt.x,height/2,pt.z),station:pt});
-  for (let k=0; k<spinePts.length-1; k++) {
-    let pA=spinePts[k],pB=spinePts[k+1],d=(pA.depth+pB.depth)/2;
-    ctx.strokeStyle=`rgba(255,180,60,${0.5+d*0.4})`; ctx.lineWidth=2;
-    ctx.beginPath(); ctx.moveTo(pA.x,pA.y); ctx.lineTo(pB.x,pB.y); ctx.stroke();
+  let cells = [];
+  for (let j = 0; j < NYM; j++) {
+    for (let i2 = 0; i2 < NXM; i2++) {
+      let a = grid[j][i2], b = grid[j][i2 + 1], c = grid[j + 1][i2 + 1], d = grid[j + 1][i2];
+      cells.push({
+        depth: (a.p.depth + b.p.depth + c.p.depth + d.p.depth) / 4,
+        z: (a.z + b.z + c.z + d.z) / 4,
+        a: a, b: b, c: c, d: d
+      });
+    }
   }
+  cells.sort(function (p1, p2) { return p1.depth - p2.depth; });
 
-  for (let rib of sortedRibs) {
-    let d=rib.depth, spineXY=project(rib.station.x,height/2,rib.station.z);
-    ctx.strokeStyle=`rgba(255,200,100,${0.35+d*0.45})`; ctx.lineWidth=1.2;
+  for (let cell of cells) {
+    let t = Math.min(1, Math.max(0, (cell.z - zMin) / span));
+    let rr = Math.round(40 + 215 * t), gg = Math.round(90 + 130 * t), bb = Math.round(150 - 110 * t);
+    let A = toScreen(cell.a), B = toScreen(cell.b), C = toScreen(cell.c), D = toScreen(cell.d);
     ctx.beginPath();
-    for (let pi=0; pi<rib.points.length; pi++) { if(pi===0)ctx.moveTo(rib.points[pi].x,rib.points[pi].y); else ctx.lineTo(rib.points[pi].x,rib.points[pi].y); }
+    ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.lineTo(C.x, C.y); ctx.lineTo(D.x, D.y);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(' + rr + ',' + gg + ',' + bb + ',' + Math.round(110 + 110 * t) + ')';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,' + (0.05 + 0.12 * t).toFixed(3) + ')';
+    ctx.lineWidth = 0.4;
     ctx.stroke();
-    ctx.fillStyle=`rgba(255,200,100,${0.4+d*0.4})`; ctx.beginPath(); ctx.arc(spineXY.x,spineXY.y,2.5,0,PI*2); ctx.fill();
   }
 
-  for (let pt of sortedPts) {
-    if (bedXSections.some(xs=>xs.x===pt.x&&xs.points.length>=2)) continue;
-    let p=project(pt.x,height/2,pt.z);
-    ctx.fillStyle=`rgba(255,180,60,${0.25+p.depth*0.4})`; ctx.beginPath(); ctx.arc(p.x,p.y,2,0,PI*2); ctx.fill();
+  for (let ob of obstacles) {
+    if (!isObstacleActive(ob)) continue;
+    let pts = [];
+    if (ob.type === 'circle') {
+      let rad = obW(ob) / 2;
+      for (let k = 0; k <= 28; k++) {
+        let a2 = k / 28 * 2 * PI;
+        pts.push([ob.x + Math.cos(a2) * rad, ob.y + Math.sin(a2) * rad]);
+      }
+    } else if (ob.type === 'poly' && ob.points) {
+      let a2 = ob.rotation * PI / 180, ca = Math.cos(a2), sa = Math.sin(a2);
+      for (let pt of ob.points) pts.push([ob.x + pt.x * ca - pt.y * sa, ob.y + pt.x * sa + pt.y * ca]);
+      if (pts.length) pts.push(pts[0]);
+    } else {
+      let hw = obW(ob) / 2, hh = ((ob.h != null ? ob.h : obW(ob))) / 2;
+      let a2 = ob.rotation * PI / 180, ca = Math.cos(a2), sa = Math.sin(a2);
+      let corners = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh], [-hw, -hh]];
+      for (let c2 of corners) pts.push([ob.x + c2[0] * ca - c2[1] * sa, ob.y + c2[0] * sa + c2[1] * ca]);
+    }
+    if (pts.length < 2) continue;
+    ctx.beginPath();
+    for (let k = 0; k < pts.length; k++) {
+      let q = toScreen(projectRaw(pts[k][0], pts[k][1], bedZ(pts[k][0], pts[k][1])));
+      if (k === 0) ctx.moveTo(q.x, q.y); else ctx.lineTo(q.x, q.y);
+    }
+    ctx.strokeStyle = 'rgba(120,220,255,0.9)';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
   }
-  ctx.strokeStyle='rgba(255,200,100,0.2)'; ctx.lineWidth=1; ctx.strokeRect(1,1,TW-2,TH-2);
+
+  ctx.fillStyle = 'rgba(255,235,170,0.85)';
+  ctx.font = '10px Courier New';
+  ctx.textAlign = 'left';
+  ctx.fillText('z ' + zMin.toFixed(1) + ' to ' + zMax.toFixed(1), 6, TH - 6);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.fillText(thumbBig ? '3d to shrink' : 'drag to rotate', TW - 6, TH - 6);
 }
 
 function updateHUD() {
@@ -1372,6 +1402,21 @@ function setup() {
   document.getElementById('flow-opacity').addEventListener('input', function(){flowOpacity=parseInt(this.value);document.getElementById('flow-opacity-val').textContent=flowOpacity;});
   document.getElementById('particle-count').addEventListener('input', function(){particleCount=parseInt(this.value);document.getElementById('particle-count-val').textContent=particleCount;while(particles.length+deposited.length<particleCount)particles.push(spawnParticle());});
   document.getElementById('depo-size').addEventListener('input', function(){ depoSize=parseFloat(this.value); document.getElementById('depo-size-val').textContent=depoSize; redrawDepoBuffer(); });
+  document.getElementById('toggle-3d').addEventListener('click',function(){
+    thumbBig=!thumbBig;
+    let c=document.getElementById('bed-thumb');
+    if(thumbBig){ c.width=windowWidth; c.height=windowHeight;
+      c.style.position='fixed'; c.style.left='0'; c.style.top='0';
+      c.style.width='100vw'; c.style.height='100vh'; c.style.zIndex='60';
+      c.style.border='none'; c.style.background='#05060c'; }
+    else { c.width=250; c.height=175;
+      c.style.position=''; c.style.left=''; c.style.top='';
+      c.style.width='100%'; c.style.height='auto'; c.style.zIndex='';
+      c.style.border='1px solid rgba(255,200,100,0.1)'; c.style.background=''; }
+    document.getElementById('toggle-3d').className=thumbBig?'tg-on':'tg-off';
+    bedThumb=c.getContext('2d');
+    updateBedThumb();
+  });
   document.getElementById('toggle-fric').addEventListener('click',function(){fricMode=!fricMode;if(fricMode){ensureFricGrid();redrawFricBuffer();}updateToggles();});
   document.getElementById('fric-paint').addEventListener('input', function(){fricPaint=parseFloat(this.value);document.getElementById('fric-paint-val').textContent=fricPaint.toFixed(2);});
   document.getElementById('fric-radius').addEventListener('input', function(){fricRadius=parseFloat(this.value);document.getElementById('fric-radius-val').textContent=fricRadius;});
@@ -1474,6 +1519,8 @@ function draw() {
   // rebuilt on bed edits, so accumulation showed as dots but never as topography. The buffer
   // resamples ~20k points, so throttle it.
   if (frameCount % 20 === 0 && deposited.length > 0) updateBedBuffer();
+  // Terrain mesh refreshes on a slower cadence than the particles.
+  if (frameCount % 12 === 0) updateBedThumb();
   drawSpotElevations();
   drawParticles();
   drawObstacles();
