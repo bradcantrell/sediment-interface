@@ -399,12 +399,14 @@ function computeUserBedZ(x, y) {
 // station high on the transect had almost no usable band left, so its strip was effectively
 // smaller and clicks clamped against the edge instead of drawing where they were aimed.
 const XS_WINDOW = 160;
+const BED_CHART_H = 160;                 // height of the transect chart along the bottom
+function bedChartY() { return height - BED_CHART_H; }
 const XS_STRIP_W = 60;
 // The single source of truth for a profile strip's rectangle. Draw and hit-test both call this,
 // so a strip can never be visible somewhere it is not clickable.
 function xsStrip(si) {
   let pt = bedPoints[si];
-  let stripH = 160, stripY = height - stripH;
+  let stripH = BED_CHART_H, stripY = bedChartY();
   let sx = constrain(pt.x - XS_STRIP_W / 2, 0, width - XS_STRIP_W);
   return { pt: pt, sx: sx, w: XS_STRIP_W, stripY: stripY, stripH: stripH };
 }
