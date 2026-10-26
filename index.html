@@ -133,6 +133,8 @@
     <div class="sect-label">physics <button class="reset-btn" id="reset-physics">reset</button></div>
     <div class="ctrl-row"><label>inflow <span class="val" id="inflow-val">2.5</span></label><input type="range" id="inflow" min="0.5" max="5" value="2.5" step="0.1"></div>
     <div class="ctrl-row"><label>friction <span class="val" id="friction-val">0.00</span></label><input type="range" id="friction" min="0" max="3" value="0" step="0.05"></div>
+    <div class="ctrl-row"><label>zone μ <span class="val" id="fric-paint-val">1.00</span></label><input type="range" id="fric-paint" min="0" max="3" value="1" step="0.05"></div>
+    <div class="ctrl-row"><label>brush r <span class="val" id="fric-radius-val">40</span></label><input type="range" id="fric-radius" min="10" max="160" value="40" step="5"></div>
     <div class="ctrl-row"><label>settle thresh <span class="val" id="settle-thresh-val">0.20</span></label><input type="range" id="settle-thresh" min="0.05" max="0.8" value="0.20" step="0.01"></div>
     <div class="ctrl-row"><label>settle prob <span class="val" id="settle-prob-val">0.012</span></label><input type="range" id="settle-prob" min="0.002" max="0.08" value="0.012" step="0.001"></div>
     <div class="ctrl-row"><label>erode thresh <span class="val" id="erosion-thresh-val">1.00</span></label><input type="range" id="erosion-thresh" min="0.2" max="3.0" value="1.0" step="0.01"></div>
@@ -163,6 +165,7 @@
       <button id="toggle-bed" class="tg-off">bed</button>
       <button id="toggle-pause" class="tg-off">pause</button>
       <button id="toggle-elev" class="tg-off">elev</button>
+      <button id="toggle-fric" class="tg-off">fric</button>
     </div>
 
     <div class="sect-label">timeline <button id="toggle-timeline" class="reset-btn" style="font-size:7px;">off</button></div>
@@ -201,6 +204,71 @@ let settleProb = 0.012;
 // deposition and lowers erosion through the existing thresholds. At 0 the field is frictionless
 // and the only deposition path is speed < settleThresh, which the field almost never meets.
 let friction = 0.0;
+// Friction zones: a per-cell coefficient ADDED to the global friction, painted with a brush.
+// It damps the solved field locally, so a rough patch slows flow, drops deposition and resists
+// erosion relative to its surroundings.
+let fricGrid = null, fricDampGrid = null, fricDirty = true;
+let fricMode = false, fricPaint = 1.0, fricRadius = 40;
+let fricBuffer = null;
+
+function ensureFricGrid() {
+  let n = GW * GH;
+  if (!fricGrid || fricGrid.length !== n) {
+    fricGrid = new Float32Array(n);
+    fricDampGrid = new Float32Array(n);
+    fricDirty = true;
+  }
+  if (!fricBuffer) fricBuffer = createGraphics(width, height);
+}
+
+// Bilinear friction at a point (used for display and for anything sampled per particle).
+function frictionAt(x, y) {
+  if (!fricGrid) return 0;
+  let fx = x / DEPO_CELL - 0.5, fy = y / DEPO_CELL - 0.5;
+  let i = Math.floor(fx), j = Math.floor(fy);
+  if (i < 0 || j < 0 || i >= GW - 1 || j >= GH - 1) return 0;
+  let tx = fx - i, ty = fy - j;
+  let a = fricGrid[j*GW+i], b = fricGrid[j*GW+i+1];
+  let c = fricGrid[(j+1)*GW+i], d = fricGrid[(j+1)*GW+i+1];
+  return (a*(1-tx)+b*tx)*(1-ty) + (c*(1-tx)+d*tx)*ty;
+}
+
+function paintFriction(x, y, erase) {
+  ensureFricGrid();
+  let r = Math.max(1, fricRadius / DEPO_CELL), r2 = r*r;
+  let ci = x / DEPO_CELL, cj = y / DEPO_CELL;
+  let i0 = Math.max(0, Math.floor(ci - r)), i1 = Math.min(GW-1, Math.ceil(ci + r));
+  let j0 = Math.max(0, Math.floor(cj - r)), j1 = Math.min(GH-1, Math.ceil(cj + r));
+  for (let j = j0; j <= j1; j++) {
+    for (let i = i0; i <= i1; i++) {
+      let dx = i - ci, dy = j - cj, d2 = dx*dx + dy*dy;
+      if (d2 > r2) continue;
+      let w = 1 - Math.sqrt(d2) / r;         // soft edge
+      let k = j * GW + i;
+      let target = erase ? 0 : fricPaint;
+      fricGrid[k] = fricGrid[k] * (1 - w) + target * w;
+    }
+  }
+  fricDirty = true;
+  redrawFricBuffer();
+}
+
+function redrawFricBuffer() {
+  if (!fricBuffer) return;
+  fricBuffer.clear();
+  if (!fricGrid) return;
+  let step = 8;
+  fricBuffer.noStroke();
+  for (let py = 0; py < height; py += step) {
+    for (let px = 0; px < width; px += step) {
+      let f = frictionAt(px, py);
+      if (f <= 0.01) continue;
+      let t = Math.min(1, f / 3);
+      fricBuffer.fill(255, 120, 40, 25 + t * 95);
+      fricBuffer.rect(px, py, step, step);
+    }
+  }
+}
 // Fraction of settleProb used by the on-bed settle chance (see updateParticles). Sized so a
 // particle entering at the inflow can cross the reach rather than depositing within a second.
 const BED_SETTLE_ON_BED = 0.25;
@@ -538,9 +606,28 @@ function velocityStep() {
 
   // Bed friction: exponential drag per step. With none, the field keeps near-inflow speed
   // everywhere, particles never drop below settleThresh, and almost nothing deposits.
-  if (friction > 0) {
-    let damp = Math.exp(-friction * DT);
-    for (let q = 0; q < u.length; q++) { u[q] *= damp; v[q] *= damp; }
+  // Friction: global plus painted zones, applied per cell to the solved field. Precomputed
+  // into fricDampGrid when either the global value or a zone changes, so the inner loop is a
+  // lookup rather than an exp() per cell per step.
+  if (friction > 0 || fricGrid) {
+    ensureFricGrid();
+    if (fricDirty) {
+      for (let j = 0; j < GH; j++) {
+        for (let i = 0; i < GW; i++) {
+          let f = friction + fricGrid[j * GW + i];
+          fricDampGrid[j * GW + i] = f > 0 ? Math.exp(-f * DT) : 1;
+        }
+      }
+      fricDirty = false;
+    }
+    for (let j = 1; j <= NY; j++) {
+      let gj = Math.min(GH - 1, Math.floor(j * cellH / DEPO_CELL));
+      for (let i = 1; i <= NX; i++) {
+        let gi = Math.min(GW - 1, Math.floor(i * cellW / DEPO_CELL));
+        let d0 = fricDampGrid[gj * GW + gi];
+        if (d0 !== 1) { let q = IX(i, j); u[q] *= d0; v[q] *= d0; }
+      }
+    }
   }
 }
 
@@ -1285,6 +1372,9 @@ function setup() {
   document.getElementById('flow-opacity').addEventListener('input', function(){flowOpacity=parseInt(this.value);document.getElementById('flow-opacity-val').textContent=flowOpacity;});
   document.getElementById('particle-count').addEventListener('input', function(){particleCount=parseInt(this.value);document.getElementById('particle-count-val').textContent=particleCount;while(particles.length+deposited.length<particleCount)particles.push(spawnParticle());});
   document.getElementById('depo-size').addEventListener('input', function(){ depoSize=parseFloat(this.value); document.getElementById('depo-size-val').textContent=depoSize; redrawDepoBuffer(); });
+  document.getElementById('toggle-fric').addEventListener('click',function(){fricMode=!fricMode;if(fricMode){ensureFricGrid();redrawFricBuffer();}updateToggles();});
+  document.getElementById('fric-paint').addEventListener('input', function(){fricPaint=parseFloat(this.value);document.getElementById('fric-paint-val').textContent=fricPaint.toFixed(2);});
+  document.getElementById('fric-radius').addEventListener('input', function(){fricRadius=parseFloat(this.value);document.getElementById('fric-radius-val').textContent=fricRadius;});
   document.getElementById('friction').addEventListener('input', function(){friction=parseFloat(this.value);document.getElementById('friction-val').textContent=friction.toFixed(2);});
   document.getElementById('depo-recent').addEventListener('input', function(){ depoRecentColor=this.value; redrawDepoBuffer(); });
   document.getElementById('depo-oldest').addEventListener('input', function(){ depoOldestColor=this.value; redrawDepoBuffer(); });
@@ -1294,6 +1384,7 @@ function setup() {
     document.getElementById('toggle-grid').className=showGrid?'tg-on':'tg-off';
     document.getElementById('toggle-flow').className=showFlow?'tg-on':'tg-off';
     document.getElementById('toggle-bed').className=bedMode?'tg-on':'tg-off';
+  document.getElementById('toggle-fric').className=fricMode?'tg-on':'tg-off';
     document.getElementById('toggle-pause').className=paused?'tg-on':'tg-off';
     document.getElementById('toggle-elev').className=showElev?'tg-on':'tg-off';
   }
@@ -1368,6 +1459,7 @@ function draw() {
   // Always composite the height gradient: when drawing a transect the underlay is exactly
   // what shows the elevation the particles are reacting to, and hiding it left bed mode blind.
   image(bedSurface, 0, 0);
+  if (fricBuffer) image(fricBuffer, 0, 0);
 
   if (!bedMode) {
     trailBuffer.push(); trailBuffer.noStroke(); trailBuffer.fill(10,10,20,trailFade); trailBuffer.rect(0,0,width,height); trailBuffer.pop();
@@ -1409,6 +1501,8 @@ function windowResized() {
   solidMaskDirty = true;
 
   let oldDepo = depoBuffer; depoBuffer = createGraphics(width,height);
+  if (fricBuffer) { let oldF = fricBuffer; fricBuffer = createGraphics(width,height); oldF.remove(); }
+  fricDirty = true;
   if (oldDepo) { depoBuffer.image(oldDepo,0,0,width,height); oldDepo.remove(); }
 
   let oldTrail = trailBuffer; trailBuffer = createGraphics(width,height); trailBuffer.background(0,0);
@@ -1563,6 +1657,7 @@ function deleteObstacle(idx) { if (idx>=0&&idx<obstacles.length) { obstacles.spl
 function mousePressed(event) {
   if (event && event.target) { let t=event.target; if (t.closest('#sidebar')||t.tagName==='BUTTON'||t.id==='bed-thumb'||t.id==='timeline-canvas') return; }
   if (mouseX<0||mouseX>width||mouseY<0||mouseY>height) return;
+  if (fricMode) { paintFriction(mouseX, mouseY, event && event.shiftKey); return; }
 
   if (bedMode) {
     let stripH=160, stripY=height-stripH, bedMaxZ=160;
@@ -1630,6 +1725,7 @@ function mousePressed(event) {
 }
 
 function mouseDragged(event) {
+  if (fricMode && mouseX>=0&&mouseX<=width&&mouseY>=0&&mouseY<=height) { paintFriction(mouseX, mouseY, event && event.shiftKey); return; }
   if (event&&event.target) { let t=event.target; if(t.closest('#sidebar')||t.id==='bed-thumb'||t.id==='timeline-canvas') return; }
   if (bedMode) {
     let stripH=160,stripY=height-stripH,bedMaxZ=160;
