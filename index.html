@@ -1458,6 +1458,13 @@ function setup() {
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
     e.preventDefault();
     paused = !paused;
+    // Resuming also restarts p5's draw loop. If the loop ever stalls (an error thrown mid-frame
+    // leaves it stopped), flipping `paused` alone changes nothing on screen -- the canvas stays
+    // frozen and space looks dead. loop() and redraw() make resume unconditional.
+    if (!paused) {
+      if (typeof loop === 'function') loop();
+      if (typeof redraw === 'function') redraw();
+    }
     if (typeof updateToggles === 'function') updateToggles();
   });
   document.getElementById('toggle-pause').addEventListener('click',function(){paused=!paused;updateToggles();this.blur();});
