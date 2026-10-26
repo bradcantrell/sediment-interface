@@ -1109,7 +1109,20 @@ function drawParticles() {
 }
 
 // ── Bed surface render ──
-function updateBedBuffer() {
+// Re-derive everything that depends on the canvas size before bed mode draws anything. Moving
+  // objects, entering bed mode and resizing can all leave the bed refresh running against a size
+  // captured earlier, which is how the profile strips could end up drawn against stale geometry.
+  function refreshBedGeometry() {
+    if (bedSurface) { bedSurface.remove(); bedSurface = createGraphics(width, height); }
+    if (userBedGrid && userBedGrid.length !== GW * GH) userBedGrid = null;
+    if (depoGrid && depoGrid.length !== GW * GH) depoGrid = null;
+    if (fricGrid && fricGrid.length !== GW * GH) { fricGrid = null; fricDampGrid = null; fricDirty = true; }
+    rebuildUserBedGrid();
+    updateBedBuffer();
+    updateBedThumb();
+  }
+
+  function updateBedBuffer() {
   rebuildUserBedGrid();
   bedSurface.clear();
   let step = 8;
@@ -1494,7 +1507,7 @@ function setup() {
   }
   document.getElementById('toggle-grid').addEventListener('click',function(){showGrid=!showGrid;updateToggles();});
   document.getElementById('toggle-flow').addEventListener('click',function(){showFlow=!showFlow;updateToggles();});
-  document.getElementById('toggle-bed').addEventListener('click',function(){bedMode=!bedMode;if(bedMode)paused=true;else paused=false;updateToggles();});
+  document.getElementById('toggle-bed').addEventListener('click',function(){bedMode=!bedMode;if(bedMode){paused=true;refreshBedGeometry();}else paused=false;updateToggles();this.blur();});
   // Space toggles the run from a window-level listener rather than relying on p5's keyPressed,
   // which does not fire reliably once focus has been moved to a control. preventDefault stops the
   // page scrolling, and the target guard leaves real form controls alone.
@@ -1920,7 +1933,7 @@ function keyPressed() {
     }
   }
   else if (key==='Escape') { selectedIdx=-1; dragging=false; resizeDrag=null; polyVertexDrag=null; polyPoints=[]; if(bedMode)bedMode=false; }
-  else if (key==='m'||key==='M') { bedMode=!bedMode; if(bedMode)paused=true; }
+  else if (key==='m'||key==='M') { bedMode=!bedMode; if(bedMode){paused=true; refreshBedGeometry();} }
   else if (key==='s'||key==='S') { saveCanvas('sediment-'+floor(simTime),'png'); }
   return false;
 }
