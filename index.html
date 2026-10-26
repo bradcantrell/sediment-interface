@@ -196,6 +196,9 @@ let inflowVel = 2.5;
 let settleThresh = 0.20;
 let erosionThresh = 1.0;
 let settleProb = 0.012;
+// Fraction of settleProb used by the on-bed settle chance (see updateParticles). Sized so a
+// particle entering at the inflow can cross the reach rather than depositing within a second.
+const BED_SETTLE_ON_BED = 0.25;
 let erosionProb = 0.02;
 
 // Deposition heightfield (aggradation): sediment accumulates as extra bed height
@@ -696,7 +699,13 @@ function updateParticles() {
     // the particles never "followed" it.
     let onBed = bedHere > 1;
     if (onBed && p.x > MIN_TRAVEL_X && age > MIN_PARTICLE_AGE) {
-      let bedDep = settleProb * (1.0 + (bedHere / 160) * 4.0);   // 1x..5x settleProb
+      // Rate must stay low enough that a particle can actually cross the reach. At ~8 px/frame
+      // a 1280 px crossing is ~160 frames, so a per-frame chance p leaves exp(-160p) crossing.
+      // The old 1x..5x settleProb was 1.2-6%/frame, which left ~0.5% reaching the far end --
+      // that is why particles stuck just inside the inflow edge as soon as a bed was drawn,
+      // and why they never did with no bed (bedHere is 0, so this branch never fired).
+      // BED_SETTLE_ON_BED brings it to ~0.3-0.6%/frame, where about half survive the crossing.
+      let bedDep = settleProb * BED_SETTLE_ON_BED * (1.0 + (bedHere / 160) * 1.5);
       if (random() < bedDep) {
         settleParticle(p, bedHere);
         particles.splice(i, 1);
