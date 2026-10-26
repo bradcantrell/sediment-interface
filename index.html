@@ -1251,8 +1251,8 @@ function updateBedThumb() {
   let span = Math.max(0.001, zMax - zMin);
   let scale = Math.min(viewW / ((bxMax - bxMin) || 0.001), viewH / ((byMax - byMin) || 0.001)) * 0.84;
   let cx = (bxMin + bxMax) / 2, cy = (byMin + byMax) / 2;
-  function toScreen(q) {
-    return { x: margin + viewW / 2 + (q.p.x - cx) * scale, y: margin + viewH / 2 + (q.p.y - cy) * scale };
+  function toScreen(pt) {
+    return { x: margin + viewW / 2 + (pt.x - cx) * scale, y: margin + viewH / 2 + (pt.y - cy) * scale };
   }
 
   let cells = [];
@@ -1275,7 +1275,7 @@ function updateBedThumb() {
   for (let cell of cells) {
     let t = Math.min(1, Math.max(0, (cell.z - zMin) / span));
     let rr = Math.round(90 + 165 * t), gg = Math.round(150 + 90 * t), bb = Math.round(210 - 120 * t);
-    let A = toScreen(cell.a), B = toScreen(cell.b), C = toScreen(cell.c), D = toScreen(cell.d);
+    let A = toScreen(cell.a.p), B = toScreen(cell.b.p), C = toScreen(cell.c.p), D = toScreen(cell.d.p);
     ctx.beginPath();
     ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.lineTo(C.x, C.y); ctx.lineTo(D.x, D.y);
     ctx.closePath();
