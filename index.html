@@ -209,7 +209,7 @@ let friction = 0.0;
 // It damps the solved field locally, so a rough patch slows flow, drops deposition and resists
 // erosion relative to its surroundings.
 let fricGrid = null, fricDampGrid = null, fricDirty = true;
-let fricMode = false, fricPaint = 1.0, fricRadius = 40;
+let fricMode = 0, fricPaint = 1.0, fricRadius = 40;   // 0 = off, 1 = add, 2 = subtract
 let fricBuffer = null;
 
 function ensureFricGrid() {
@@ -234,7 +234,7 @@ function frictionAt(x, y) {
   return (a*(1-tx)+b*tx)*(1-ty) + (c*(1-tx)+d*tx)*ty;
 }
 
-function paintFriction(x, y, erase) {
+function paintFriction(x, y, mode) {
   ensureFricGrid();
   let r = Math.max(1, fricRadius / DEPO_CELL), r2 = r*r;
   let ci = x / DEPO_CELL, cj = y / DEPO_CELL;
@@ -246,7 +246,7 @@ function paintFriction(x, y, erase) {
       if (d2 > r2) continue;
       let w = 1 - Math.sqrt(d2) / r;         // soft edge
       let k = j * GW + i;
-      let target = erase ? 0 : fricPaint;
+      let target = (mode === 2) ? 0 : fricPaint;   // subtract blends back toward zero
       fricGrid[k] = fricGrid[k] * (1 - w) + target * w;
     }
   }
@@ -1433,7 +1433,12 @@ function setup() {
     bedThumb=c.getContext('2d');
     updateBedThumb();
   });
-  document.getElementById('toggle-fric').addEventListener('click',function(){fricMode=!fricMode;if(fricMode){ensureFricGrid();redrawFricBuffer();}updateToggles();});
+  document.getElementById('toggle-fric').addEventListener('click',function(){
+    fricMode = (fricMode + 1) % 3;
+    if (fricMode) { ensureFricGrid(); redrawFricBuffer(); }
+    this.blur();
+    updateToggles();
+  });
   document.getElementById('fric-paint').addEventListener('input', function(){fricPaint=parseFloat(this.value);document.getElementById('fric-paint-val').textContent=fricPaint.toFixed(2);});
   document.getElementById('fric-radius').addEventListener('input', function(){fricRadius=parseFloat(this.value);document.getElementById('fric-radius-val').textContent=fricRadius;});
   document.getElementById('friction').addEventListener('input', function(){friction=parseFloat(this.value);document.getElementById('friction-val').textContent=friction.toFixed(2);});
@@ -1445,7 +1450,9 @@ function setup() {
     document.getElementById('toggle-grid').className=showGrid?'tg-on':'tg-off';
     document.getElementById('toggle-flow').className=showFlow?'tg-on':'tg-off';
     document.getElementById('toggle-bed').className=bedMode?'tg-on':'tg-off';
-  document.getElementById('toggle-fric').className=fricMode?'tg-on':'tg-off';
+  let fricBtn = document.getElementById('toggle-fric');
+  fricBtn.className = fricMode ? 'tg-on' : 'tg-off';
+  fricBtn.textContent = fricMode === 1 ? 'fric+' : (fricMode === 2 ? 'fric-' : 'fric');
     document.getElementById('toggle-pause').className=paused?'tg-on':'tg-off';
     document.getElementById('toggle-elev').className=showElev?'tg-on':'tg-off';
   }
@@ -1738,7 +1745,7 @@ function deleteObstacle(idx) { if (idx>=0&&idx<obstacles.length) { obstacles.spl
 function mousePressed(event) {
   if (event && event.target) { let t=event.target; if (t.closest('#sidebar')||t.tagName==='BUTTON'||t.id==='bed-thumb'||t.id==='timeline-canvas') return; }
   if (mouseX<0||mouseX>width||mouseY<0||mouseY>height) return;
-  if (fricMode) { paintFriction(mouseX, mouseY, event && event.shiftKey); return; }
+  if (fricMode) { paintFriction(mouseX, mouseY, event && event.shiftKey ? 2 : fricMode); return; }
 
   if (bedMode) {
     let stripH=160, stripY=height-stripH, bedMaxZ=160;
@@ -1806,7 +1813,7 @@ function mousePressed(event) {
 }
 
 function mouseDragged(event) {
-  if (fricMode && mouseX>=0&&mouseX<=width&&mouseY>=0&&mouseY<=height) { paintFriction(mouseX, mouseY, event && event.shiftKey); return; }
+  if (fricMode && mouseX>=0&&mouseX<=width&&mouseY>=0&&mouseY<=height) { paintFriction(mouseX, mouseY, event && event.shiftKey ? 2 : fricMode); return; }
   if (event&&event.target) { let t=event.target; if(t.closest('#sidebar')||t.id==='bed-thumb'||t.id==='timeline-canvas') return; }
   if (bedMode) {
     let stripH=160,stripY=height-stripH,bedMaxZ=160;
