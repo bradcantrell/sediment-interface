@@ -1500,7 +1500,11 @@ function mousePressed(event) {
         }
       }
       if (mouseX>=sx&&mouseX<=sx+xStripW&&mouseY<stripY) {
-        let y=mouseY/stripY*height, relX=(mouseX-sx)/xStripW, absZ=(1-relX)*bedMaxZ, z=max(0,absZ-pt.z);
+        // Signed: a transverse profile is an offset from the transect at that station, so it
+        // must be able to cut BELOW it. Clamping to >= 0 let a section only ever add height,
+        // which left every profile floating above the transect and raised the whole bed above
+        // the elevation that was drawn. The transect is the baseline, not a floor.
+        let y=mouseY/stripY*height, relX=(mouseX-sx)/xStripW, absZ=Math.max(0,(1-relX)*bedMaxZ), z=absZ-pt.z;
         let xsIdx=bedXSections.findIndex(xs=>xs.x===pt.x);
         if (xsIdx<0) { bedXSections.push({x:pt.x,points:[]}); xsIdx=bedXSections.length-1; }
         bedXSections[xsIdx].points.push({y:constrain(y,0,height),z}); bedXSections[xsIdx].points.sort((a,b)=>a.y-b.y);
@@ -1547,8 +1551,8 @@ function mouseDragged(event) {
       let xsData=bedXSections.find(xs=>xs.x===bedPoints[si].x);
       if (xsData&&pi<xsData.points.length) {
         let xStripW=60, sx=bedPoints[si].x-xStripW/2;
-        let relX=constrain((mouseX-sx)/xStripW,0,1), absZ=(1-relX)*bedMaxZ;
-        xsData.points[pi].z=max(0,absZ-bedPoints[si].z);
+        let relX=constrain((mouseX-sx)/xStripW,0,1), absZ=Math.max(0,(1-relX)*bedMaxZ);
+        xsData.points[pi].z=absZ-bedPoints[si].z;
         xsData.points[pi].y=constrain(mouseY/stripY*height,0,height);
         updateBedBuffer(); updateBedThumb();
       }
