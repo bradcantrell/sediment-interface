@@ -394,6 +394,21 @@ function computeUserBedZ(x, y) {
 }
 
 // Fast bilinear lookup of the cached user-drawn bed height (same grid as depoGrid).
+// A transverse-profile strip maps a window of ABSOLUTE elevation onto its width. The window is
+// centred on the station's transect height rather than fixed at 0..bedMaxZ: with a fixed range a
+// station high on the transect had almost no usable band left, so its strip was effectively
+// smaller and clicks clamped against the edge instead of drawing where they were aimed.
+const XS_WINDOW = 160;
+function xsWindowLo(baseZ) { return Math.max(-80, baseZ - XS_WINDOW / 2); }
+function xsAbsToVx(sx, w, absZ, baseZ) {
+  let lo = xsWindowLo(baseZ);
+  return sx + w - ((absZ - lo) / XS_WINDOW) * w;
+}
+function xsVxToAbs(mouseXPos, sx, w, baseZ) {
+  let lo = xsWindowLo(baseZ);
+  return lo + (1 - (mouseXPos - sx) / w) * XS_WINDOW;
+}
+
 function userBedZ(x, y) {
   if (!userBedGrid || bedPoints.length < 2) return 0;
   let fx = x / DEPO_CELL - 0.5, fy = y / DEPO_CELL - 0.5;
@@ -1183,16 +1198,16 @@ function drawBedProfile() {
       let pts=[...xsData.points].sort((a,b)=>a.y-b.y);
       stroke(255,180,60,180); strokeWeight(2); noFill(); beginShape();
       for (let p of pts) {
-        let vy=p.y/height*stripY, absZ=baseZ+p.z, vx=sx+xStripW-(absZ/bedMaxZ)*xStripW; vx=constrain(vx,sx,sx+xStripW);
+        let vy=p.y/height*stripY, absZ=baseZ+p.z, vx=xsAbsToVx(sx,xStripW,absZ,baseZ); vx=constrain(vx,sx,sx+xStripW);
         vertex(vx,vy);
       }
       endShape();
       for (let p of pts) {
-        let vy=p.y/height*stripY, absZ=baseZ+p.z, vx=sx+xStripW-(absZ/bedMaxZ)*xStripW; vx=constrain(vx,sx,sx+xStripW);
+        let vy=p.y/height*stripY, absZ=baseZ+p.z, vx=xsAbsToVx(sx,xStripW,absZ,baseZ); vx=constrain(vx,sx,sx+xStripW);
         fill(255,180,60,200); noStroke(); ellipse(vx,vy,5,5);
       }
     }
-    let refX=sx+xStripW-(baseZ/bedMaxZ)*xStripW; stroke(255,255,255,25); strokeWeight(0.5); line(refX,0,refX,stripY);
+    let refX=xsAbsToVx(sx,xStripW,baseZ,baseZ); stroke(255,255,255,25); strokeWeight(0.5); line(refX,0,refX,stripY);
     if (si===activeXSection) { noFill(); stroke(255,200,100,80); strokeWeight(1.5); rect(sx-1,0,xStripW+2,stripY); }
   }
 }
@@ -1778,7 +1793,7 @@ function mousePressed(event) {
         // must be able to cut BELOW it. Clamping to >= 0 let a section only ever add height,
         // which left every profile floating above the transect and raised the whole bed above
         // the elevation that was drawn. The transect is the baseline, not a floor.
-        let y=mouseY/stripY*height, relX=(mouseX-sx)/xStripW, absZ=Math.max(0,(1-relX)*bedMaxZ), z=absZ-pt.z;
+        let y=mouseY/stripY*height, absZ=Math.max(0, xsVxToAbs(mouseX,sx,xStripW,pt.z)), z=absZ-pt.z;
         let xsIdx=bedXSections.findIndex(xs=>xs.x===pt.x);
         if (xsIdx<0) { bedXSections.push({x:pt.x,points:[]}); xsIdx=bedXSections.length-1; }
         bedXSections[xsIdx].points.push({y:constrain(y,0,height),z}); bedXSections[xsIdx].points.sort((a,b)=>a.y-b.y);
@@ -1826,7 +1841,7 @@ function mouseDragged(event) {
       let xsData=bedXSections.find(xs=>xs.x===bedPoints[si].x);
       if (xsData&&pi<xsData.points.length) {
         let xStripW=60, sx=constrain(bedPoints[si].x-xStripW/2, 0, width-xStripW);
-        let relX=constrain((mouseX-sx)/xStripW,0,1), absZ=Math.max(0,(1-relX)*bedMaxZ);
+        let absZ=Math.max(0, xsVxToAbs(mouseX,sx,xStripW,bedPoints[si].z));
         xsData.points[pi].z=absZ-bedPoints[si].z;
         xsData.points[pi].y=constrain(mouseY/stripY*height,0,height);
         updateBedBuffer(); updateBedThumb();
