@@ -1229,7 +1229,10 @@ function updateBedThumb() {
   for (let j = 0; j <= NYM; j++) {
     let row = [];
     for (let i2 = 0; i2 <= NXM; i2++) {
-      let px = i2 / NXM * width, py = j / NYM * height;
+      // Clamp to 2px inside the domain: userBedZ() returns 0 once a sample falls outside the
+      // interpolation grid, so sampling exactly at 0 or width dropped the outer ring to zero.
+      let px = Math.min(width - 2, Math.max(2, i2 / NXM * width));
+      let py = Math.min(height - 2, Math.max(2, j / NYM * height));
       let z = bedZ(px, py);
       if (z < zMin) zMin = z;
       if (z > zMax) zMax = z;
