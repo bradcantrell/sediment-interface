@@ -623,7 +623,14 @@ function updateParticles() {
       let gradY = (bedAbove - bedBelow) / 8;   // + = downhill toward +y
       let gradX = (bedLeft - bedRight) / 8;    // + = downhill toward +x
       p.vy += gradY * cellH * 2.0;
-      p.vx += gradX * cellW * 0.6;
+      // Bed slope has to act on transport. At the old gain of 0.6 a typical drawn slope gave
+      // ~0.4 px/frame against a ~8 px/frame flow, a 20x deficit: the bed could not visibly
+      // speed sediment up downhill or slow it on the flat, which is what the drawn surface is
+      // for. Raised to 6.0 and capped at 60% of the local flow speed so a slope accelerates or
+      // brakes sediment without letting a steep drawn bed launch it.
+      let flowSpeed = Math.sqrt(vel.vx * vel.vx + vel.vy * vel.vy);
+      let slopeCap = Math.max(4, flowSpeed * 0.6);
+      p.vx += Math.max(-slopeCap, Math.min(slopeCap, gradX * cellW * 6.0));
     }
 
     // FLOW: ×4 rescales the Stam field velocity (u*cellW) to a stable visual drift.
@@ -705,7 +712,12 @@ function updateParticles() {
       // that is why particles stuck just inside the inflow edge as soon as a bed was drawn,
       // and why they never did with no bed (bedHere is 0, so this branch never fired).
       // BED_SETTLE_ON_BED brings it to ~0.3-0.6%/frame, where about half survive the crossing.
-      let bedDep = settleProb * BED_SETTLE_ON_BED * (1.0 + (bedHere / 160) * 1.5);
+      // Rate uses the DRAWN bed, not bedZ(). bedZ includes accumulated deposit, so including
+      // it made deposition feed its own growth: the first particles to settle raised bedHere,
+      // which raised the settle chance, which deposited more. That runaway is what grew the
+      // ridge where sediment first touched down instead of letting it travel the reach.
+      let drawnZ = Math.max(0, userBedZ(p.x, p.y));
+      let bedDep = settleProb * BED_SETTLE_ON_BED * (1.0 + (drawnZ / 160) * 1.5);
       if (random() < bedDep) {
         settleParticle(p, bedHere);
         particles.splice(i, 1);
@@ -716,7 +728,8 @@ function updateParticles() {
     // Speed-graded settling: the slower a particle, the more readily it deposits.
     // A hard threshold made settling all-or-nothing; now slowness scales the chance
     // (a particle at rest settles ~9x faster than one just under the threshold).
-    let bedSettleBoost = bedHere > 0 ? 1.0 + (bedHere/160)*4.0 : 1.0;
+    let drawnZForBoost = Math.max(0, userBedZ(p.x, p.y));   // drawn bed only, see above
+    let bedSettleBoost = drawnZForBoost > 0 ? 1.0 + (drawnZForBoost/160)*2.0 : 1.0;
     let slow = speed < settleThresh ? 1.0 - speed / settleThresh : 0.0;
     if (p.x > MIN_TRAVEL_X && age > MIN_PARTICLE_AGE && speed < settleThresh && random() < settleProb * bedSettleBoost * (1.0 + slow * 8.0)) {
       settleParticle(p, bedHere);
