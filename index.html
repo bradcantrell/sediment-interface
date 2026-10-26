@@ -1449,7 +1449,18 @@ function setup() {
   document.getElementById('toggle-grid').addEventListener('click',function(){showGrid=!showGrid;updateToggles();});
   document.getElementById('toggle-flow').addEventListener('click',function(){showFlow=!showFlow;updateToggles();});
   document.getElementById('toggle-bed').addEventListener('click',function(){bedMode=!bedMode;if(bedMode)paused=true;else paused=false;updateToggles();});
-  document.getElementById('toggle-pause').addEventListener('click',function(){paused=!paused;updateToggles();});
+  // Space toggles the run from a window-level listener rather than relying on p5's keyPressed,
+  // which does not fire reliably once focus has been moved to a control. preventDefault stops the
+  // page scrolling, and the target guard leaves real form controls alone.
+  window.addEventListener('keydown', function(e){
+    if (e.code !== 'Space' && e.key !== ' ') return;
+    let t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+    e.preventDefault();
+    paused = !paused;
+    if (typeof updateToggles === 'function') updateToggles();
+  });
+  document.getElementById('toggle-pause').addEventListener('click',function(){paused=!paused;updateToggles();this.blur();});
   document.getElementById('toggle-elev').addEventListener('click',function(){elevMode=(elevMode+1)%5;showElev=elevMode>0;updateToggles();});
   updateToggles();
 
@@ -1823,8 +1834,7 @@ function mouseWheel(event) {
 }
 
 function keyPressed() {
-  if (key===' ') { paused=!paused; }
-  else if (key==='r'||key==='R') {
+  if (key==='r'||key==='R') {
     simTime=0; initParticles(); depoBuffer.clear(); trailBuffer.clear(); deposited=[];
     if (depoGrid) depoGrid.fill(0);
     bedSurface.clear(); updateBedBuffer();
