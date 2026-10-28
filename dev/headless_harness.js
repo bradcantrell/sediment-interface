@@ -278,12 +278,20 @@ try {
     height: typeof height!=='undefined'?height:null,
     GW: typeof GW!=='undefined'?GW:null,
     GH: typeof GH!=='undefined'?GH:null,
+    NX: typeof NX!=='undefined'?NX:null,
+    NY: typeof NY!=='undefined'?NY:null,
+    solid: typeof solid!=='undefined'?solid:null,
+    P: typeof p!=='undefined'?p:null,
+    divArr: typeof divArr!=='undefined'?divArr:null,
+    cellW: typeof cellW!=='undefined'?cellW:null,
+    cellH: typeof cellH!=='undefined'?cellH:null,
   }),
   setPaused: (x) => { paused = x; },
   setFriction: (x) => { friction = x; },
   setFricMode: (x) => { fricMode = x; },
   setInflow: (x) => { inflowVel = x; },
   setBedPoints: (pts) => { bedPoints = pts; },
+  setObstacles: (obs) => { obstacles = obs; },
 };
 `)();
 } catch (e) {
@@ -419,7 +427,65 @@ try {
   }
 }
 
-// ---------------------------------------------------------------- 9. nothing has gone non-finite
+// ---------------------------------------------------------------- 9. still water
+// The well-balanced question: on a sloping bed with no inflow, should anything move?
+//
+// What we found, by elimination, on 2026-10-28:
+//
+//   - The velocity solver has NO bed term at all. velocityStep() is inflow, diffuse,
+//     project, advect, project, friction. Nothing reads bedZ. The bed steers particles
+//     through updateParticles(), not the solved field. So "well-balanced with respect to
+//     the bed" is currently vacuous: there is no bed coupling to unbalance. Hydrostatic
+//     reconstruction becomes relevant only if and when a bed-pressure term is added.
+//   - There IS a steady residual, mean 0.08 and max ~0.7, about 3% of the ~2.5 mean speed
+//     a flowing field carries in check 4. It does not grow (n=120 0.776, n=360 0.628,
+//     n=1200 0.709), so it is a standing offset, not an instability.
+//   - It is produced by the pressure projection. Disabling project() drives the residual to
+//     machine zero (2.6e-29). Reducing the Poisson iterations from 4 to 1 also drives it to
+//     zero. It is not the bed, not the pressure warm start (clearing p changes nothing), and
+//     only partly the obstacles (0.35 with, 0.24 without). The remaining source is a
+//     divergence at the inflow boundary being projected into the domain.
+//
+// The tolerances below lock in current behaviour rather than demand the ideal: roughly twice
+// the measured value, so a regression fires and an improvement does not. They must not be
+// raised to make a worse solver pass — that is how a bad model starts scoring well.
+const STILL_TOL_MEAN = 0.15;   // measured 0.080; ~6% of the 2.5 flowing mean
+const STILL_TOL_MAX  = 1.50;   // measured ~0.71
+{
+  const U = S().U, V = S().V;
+  app.setInflow(0);
+  app.setFriction(0);
+  const w = S().width, h = S().height;
+  app.setBedPoints([{ x: w * 0.15, z: 10 }, { x: w * 0.5, z: 120 }, { x: w * 0.85, z: 20 }]);
+  app.rebuildUserBedGrid();
+  app.updateBedBuffer();
+  U.fill(0); V.fill(0);
+  const sample = () => {
+    let mx = 0, s = 0, c = 0;
+    for (let i = 0; i < U.length; i++) {
+      const m = Math.abs(U[i]) + Math.abs(V[i]);
+      if (!isFinite(m)) continue;
+      if (m > mx) mx = m;
+      s += m; c++;
+    }
+    return { max: mx, mean: s / Math.max(c, 1) };
+  };
+  const marks = [120, 360, 1200];
+  const out = [];
+  let done = 0;
+  for (const m of marks) {
+    while (done < m) { app.velocityStep(); done++; }
+    const r = sample();
+    out.push(`n=${m}: max ${r.max.toExponential(2)} mean ${r.mean.toExponential(2)}`);
+  }
+  console.log("  ....  still water: " + out.join(" | ") + "   (target 0 for both)");
+  const s = sample();
+  check(isFinite(s.max) && s.mean <= STILL_TOL_MEAN && s.max <= STILL_TOL_MAX,
+        "still water holds a steady (non-zero) spurious current",
+        `mean ${s.mean.toFixed(3)} (tol ${STILL_TOL_MEAN}), max ${s.max.toFixed(3)} (tol ${STILL_TOL_MAX})`);
+}
+
+// ---------------------------------------------------------------- 10. nothing has gone non-finite
 {
   for (let i = 0; i < 30; i++) app.draw();
   const P = S().particles;
