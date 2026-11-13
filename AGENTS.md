@@ -36,11 +36,12 @@ and the simulation was dead along with every listener attached after the throw.
 
     node dev/headless_harness.js index.html    # exit 0 = pass, 1 = fail
 
-Eighteen checks (sixteen shared, two from `dev/site_checks.js`), all on model state rather than pixels: `setup()` completes, the draw loop
+Twenty-two checks (twenty shared, two from `dev/site_checks.js`), all on model state rather than pixels: `setup()` completes, the draw loop
 advances simulation time, particles move downstream, the friction slider reaches the
 solver, a drawn transect edits the bed, every visible strip is clickable, Space unpauses
 exactly once, the friction brush adds and subtracts, still water holds a steady spurious
-current within stated tolerances, a backend mounts once and gets its frame and its keys,
+current within stated tolerances, flow over a drawn rise speeds up by the depth ratio and
+conserves discharge, a backend mounts once and gets its frame and its keys,
 `sceneState()` describes the drawn scene, the case generator builds a case from it, and
 nothing goes non-finite.
 
@@ -57,10 +58,18 @@ Rules that have earned their place:
   handlers so the Space path can be invoked directly; dispatching a `KeyboardEvent` at the
   page does not work headlessly, and p5's own `keyPressed` is not reached.
 
-Known limitation, measured: the velocity solver has no bed term. `velocityStep()` is
-inflow, diffuse, project, advect, project, friction, and nothing reads `bedZ` — the bed
-steers particles only. The still-water residual comes from the pressure projection, not
-from the bed, and that is what the tolerance in the harness documents.
+The drawn bed is in the flow. With a bed drawn, `velocityStep()` uses `projectDepth()`,
+which conserves discharge (`div(h u) = 0`) on a relative depth grid built from the drawn bed
+with the same px-to-metre mapping as the export. With no bed it runs the plain `project()`
+exactly as before. Things that were measured and are easy to undo by accident:
+
+- **`projectDepth()` keeps its pressure between frames and has an open outflow.** Started
+  from zero each frame, 30 sweeps gave a 1% speed-up over a rise that should give 33%. With
+  the carried pressure but the outflow closed like `project()`'s, the mismatch grew into a
+  steady false source (discharge rising downstream). Both are covered by checks.
+- Only the drawn bed counts as depth, not accumulated deposit. The export sends the same.
+- The still-water residual comes from the pressure projection, and that is what the
+  tolerance in the harness documents.
 
 ## tidal-prototype.html — tidal model (dev copy)
 

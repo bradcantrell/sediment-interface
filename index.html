@@ -446,6 +446,7 @@ function userBedZ(x, y) {
 // Rebuild the cached bed grid from the exact (slow) interpolation.
 // Called on bed edits and before each bed-surface re-render (~GW*GH samples).
 function rebuildUserBedGrid() {
+  depthDirty = true;          // the flow solver's depth follows the same drawn bed
   if (!userBedGrid) return;
   for (let j = 0; j < GH; j++) {
     let y = (j + 0.5) * DEPO_CELL;
@@ -628,7 +629,99 @@ function project(uVec, vVec, pArr, divArr) {
   setBnd(1, uVec); setBnd(2, vVec);
 }
 
+// ── The drawn bed in the flow ──
+// The solver is depth-averaged: with a bed drawn, the projection conserves discharge
+// (div(h u) = 0, h = water depth) instead of plan-view velocity (div(u) = 0). Flow speeds
+// up over shallows and more of it goes through the deep part of a section.
+//
+// Depth is relative, 1 = the full water column, from the same mapping the OpenFOAM export
+// uses (bridge/case_generator.js: a 2.0 m channel, and 160 px of drawn bed is 0.5 m of
+// relief, clamped there). So 640 px of bed would be the surface, and a drawn bed takes away
+// at most a quarter of the depth. Only the drawn bed counts, not accumulated deposit, which
+// is also all the export sends.
+// With no bed drawn depthGrid is null and the solver runs the plain projection, unchanged.
+const WATER_DEPTH_PX = 640;
+const BED_RELIEF_MAX_PX = 160;
+const DEPTH_SOR = 1.7;                     // over-relaxation for the depth-weighted pressure solve
+let depthGrid = null, depthDirty = true;
+let pBedA = null, pBedB = null;            // pressures carried between frames, one per projection
+
+function rebuildDepthGrid() {
+  depthDirty = false;
+  if (bedPoints.length < 2) { depthGrid = null; return; }
+  if (!depthGrid) { depthGrid = new Float32Array(SIZE); pBedA = new Float32Array(SIZE); pBedB = new Float32Array(SIZE); }
+  for (let j = 0; j <= NY + 1; j++) {
+    let y = Math.min(NY, Math.max(1, j)) * cellH;          // boundary cells copy their neighbour
+    for (let i = 0; i <= NX + 1; i++) {
+      let x = Math.min(NX, Math.max(1, i)) * cellW;
+      let z = Math.min(BED_RELIEF_MAX_PX, Math.max(0, computeUserBedZ(x, y)));
+      depthGrid[IX(i, j)] = 1 - z / WATER_DEPTH_PX;
+    }
+  }
+}
+
+// Pressure boundary for a solve that is run to convergence: walls and the inflow hold no
+// gradient (the inflow speed is prescribed), and the outflow is open, pressure zero at the
+// outflow face. project() copies at both ends, which leaves nothing able to adjust the
+// outflow when inflow and outflow discharge disagree; it gets away with that because it
+// never converges. Carried between frames, that mismatch grew into a steady false source.
+function setBndPressureOpen(x) {
+  for (let j = 1; j <= NY; j++) { x[IX(0, j)] = x[IX(1, j)]; x[IX(NX+1, j)] = -x[IX(NX, j)]; }
+  for (let i = 0; i <= NX + 1; i++) { x[IX(i, 0)] = x[IX(i, 1)]; x[IX(i, NY+1)] = x[IX(i, NY)]; }
+}
+
+// project() with depth weights. With every depth equal it solves the same equation as project().
+//
+// It differs in how it gets there. project() starts each solve from zero pressure, and 30
+// sweeps only settle short-range imbalances. That is enough on a flat bed, where the field
+// arriving is already nearly balanced. A bed asks for a channel-long adjustment (all the flow
+// upstream of a rise has to learn about it), which 30 cold sweeps cannot deliver: measured,
+// flow over a full-width rise that should speed up by a third sped up by 1%. So each of the
+// two projections in a step keeps its pressure from the previous frame as the starting
+// guess (pArr is NOT cleared), and the sweep is over-relaxed. The solve then converges
+// across frames, in about a second of running after a bed edit.
+function projectDepth(uVec, vVec, pArr, divArr) {
+  const H = depthGrid;
+  for (let j = 1; j <= NY; j++) {
+    for (let i = 1; i <= NX; i++) {
+      let idx = IX(i, j);
+      if (solid[idx]) { divArr[idx] = 0; pArr[idx] = 0; continue; }
+      let R = IX(i+1, j), L = IX(i-1, j), T = IX(i, j+1), B = IX(i, j-1);
+      let qR = solid[R] ? 0 : H[R] * uVec[R], qL = solid[L] ? 0 : H[L] * uVec[L];
+      let qT = solid[T] ? 0 : H[T] * vVec[T], qB = solid[B] ? 0 : H[B] * vVec[B];
+      divArr[idx] = -0.5 * (qR - qL + qT - qB);
+    }
+  }
+  setBnd(0, divArr); setBndPressureOpen(pArr);
+  for (let iter = 0; iter < GAUSS_SEIDEL_ITERS; iter++) {
+    for (let j = 1; j <= NY; j++) {
+      for (let i = 1; i <= NX; i++) {
+        let idx = IX(i, j);
+        if (solid[idx]) continue;
+        let R = IX(i+1, j), L = IX(i-1, j), T = IX(i, j+1), B = IX(i, j-1), hc = H[idx], pc = pArr[idx];
+        // Face depth is the mean of the two cells. A solid neighbour is a wall (no pressure
+        // gradient across it), which linSolve() expresses the same way: it stands in pc.
+        let wR = 0.5 * (hc + H[R]), wL = 0.5 * (hc + H[L]), wT = 0.5 * (hc + H[T]), wB = 0.5 * (hc + H[B]);
+        let gs = (divArr[idx] + wR * (solid[R] ? pc : pArr[R]) + wL * (solid[L] ? pc : pArr[L])
+                              + wT * (solid[T] ? pc : pArr[T]) + wB * (solid[B] ? pc : pArr[B])) / (wR + wL + wT + wB);
+        pArr[idx] = pc + DEPTH_SOR * (gs - pc);
+      }
+    }
+    setBndPressureOpen(pArr);
+  }
+  for (let j = 1; j <= NY; j++)
+    for (let i = 1; i <= NX; i++) {
+      let idx = IX(i, j);
+      if (solid[idx]) continue;
+      uVec[idx] -= 0.5 * (pArr[IX(i+1, j)] - pArr[IX(i-1, j)]);
+      vVec[idx] -= 0.5 * (pArr[IX(i, j+1)] - pArr[IX(i, j-1)]);
+    }
+  setBnd(1, uVec); setBnd(2, vVec);
+}
+
 function velocityStep() {
+  if (depthDirty) rebuildDepthGrid();
+  const bed = !!depthGrid;
   // Dirichlet inflow
   for (let j = 1; j <= NY; j++) {
     let idx = IX(1, j);
@@ -638,10 +731,10 @@ function velocityStep() {
     }
   }
   diffuse(1, uPrev, u, VISC);
-  project(uPrev, vPrev, p, divArr);
+  if (bed) projectDepth(uPrev, vPrev, pBedA, divArr); else project(uPrev, vPrev, p, divArr);
   advect(1, u, uPrev, uPrev, vPrev);
   advect(2, v, vPrev, uPrev, vPrev);
-  project(u, v, p, divArr);
+  if (bed) projectDepth(u, v, pBedB, divArr); else project(u, v, p, divArr);
 
   // Bed friction: exponential drag per step. With none, the field keeps near-inflow speed
   // everywhere, particles never drop below settleThresh, and almost nothing deposits.
@@ -1639,7 +1732,7 @@ function windowResized() {
   let ch = windowHeight;
   resizeCanvas(cw, ch);
   cellW = width/NX; cellH = height/NY;
-  solidMaskDirty = true;
+  solidMaskDirty = true; depthDirty = true;
 
   let oldDepo = depoBuffer; depoBuffer = createGraphics(width,height);
   if (fricBuffer) { let oldF = fricBuffer; fricBuffer = createGraphics(width,height); oldF.remove(); }

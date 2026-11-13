@@ -13,6 +13,8 @@
 //   7. Space unpauses exactly once  — no double-toggle between keyPressed and the window
 //   8. the friction brush is three-state — fric+ adds, fric- takes back toward zero
 //   9. still water stays within its stated residual
+//  9b. the drawn bed reaches the flow — flow speeds up over a rise by the depth ratio,
+//                                     discharge is conserved, a uniform rise changes nothing
 //  10. the site extension point works — a backend mounts once, runs every frame, gets its
 //                                     keys, and sceneState() describes the drawn scene
 //  11. the site's own checks       — dev/site_checks.js next to the page, if there is one
@@ -513,6 +515,54 @@ const STILL_TOL_MAX  = 1.50;   // measured ~0.71
   check(isFinite(s.max) && s.mean <= STILL_TOL_MEAN && s.max <= STILL_TOL_MAX,
         "still water holds a steady (non-zero) spurious current",
         `mean ${s.mean.toFixed(3)} (tol ${STILL_TOL_MEAN}), max ${s.max.toFixed(3)} (tol ${STILL_TOL_MAX})`);
+}
+
+// ---------------------------------------------------------------- 9b. the drawn bed reaches the flow
+// The velocity solver used to ignore the bed entirely (it steered particles only). These
+// checks pin the depth-averaged behaviour: discharge h*u is what is conserved, not u.
+{
+  const st0 = S(), w = st0.width, NX = st0.NX, NY = st0.NY, IXf = (i, j) => i + j * (NX + 2);
+  const savedBed = st0.bedPoints, savedXS = app.run("bedXSections"), savedObs = st0.obstacles;
+  app.setObstacles([]);
+  app.run("bedXSections = []; friction = 0; fricGrid = null; fricDirty = true; solidMaskDirty = true; buildSolidMask()");
+  app.setInflow(2.5);
+  // Time-mean u for a bed, started from uniform flow so no run inherits the last one's field.
+  const runMean = (pts) => {
+    app.setBedPoints(pts); app.rebuildUserBedGrid();
+    app.run("u.fill(inflowVel); v.fill(0); uPrev.fill(inflowVel); vPrev.fill(0)");
+    for (let k = 0; k < 500; k++) app.velocityStep();
+    const m = new Float64Array(st0.U.length), n = 60;
+    for (let k = 0; k < n; k++) { app.velocityStep(); const U = S().U; for (let q = 0; q < m.length; q++) m[q] += U[q] / n; }
+    return m;
+  };
+  const col = (m, i) => { let a = 0; for (let j = 1; j <= NY; j++) a += m[IXf(i, j)]; return a / NY; };
+
+  const flat = runMean([]);
+  check(app.run("depthGrid") === null && Math.abs(col(flat, NX >> 1) - 2.5) < 0.01,
+        "with no bed drawn the solver runs its plain projection", `mid-channel u ${col(flat, NX >> 1).toFixed(3)}`);
+
+  // A rise across the whole width: one-dimensional, so u must scale as 1/depth.
+  const hump = runMean([{ x: w * 0.1, z: 0 }, { x: w * 0.5, z: 160 }, { x: w * 0.9, z: 0 }]);
+  const H = app.run("depthGrid");
+  if (!H) {
+    check(false, "flow speeds up over a full-width rise by the depth ratio", "the solver has no depth grid with a bed drawn");
+    check(false, "discharge is conserved along the channel over a bed", "no depth grid");
+  } else {
+    const ic = NX >> 1, up = col(hump, 6), crest = col(hump, ic), want = H[IXf(6, 1)] / H[IXf(ic, 1)];
+    check(Math.abs(crest / up / want - 1) < 0.03,
+          "flow speeds up over a full-width rise by the depth ratio", `u crest/upstream ${(crest / up).toFixed(3)}, depth ratio ${want.toFixed(3)}`);
+    let qmin = Infinity, qmax = -Infinity;
+    for (let i = 3; i <= NX - 2; i++) { let q = 0; for (let j = 1; j <= NY; j++) q += H[IXf(i, j)] * hump[IXf(i, j)]; q /= NY; qmin = Math.min(qmin, q); qmax = Math.max(qmax, q); }
+    check(qmin > 0 && (qmax - qmin) / 2.5 < 0.01, "discharge is conserved along the channel over a bed", `h*u from ${qmin.toFixed(3)} to ${qmax.toFixed(3)} against an inflow of 2.5`);
+  }
+
+  // Raising the whole bed by the same amount changes the depth everywhere and the flow nowhere.
+  const raised = runMean([{ x: 0, z: 100 }, { x: w, z: 100 }]);
+  let d = 0; for (let j = 1; j <= NY; j++) for (let i = 1; i <= NX; i++) d = Math.max(d, Math.abs(raised[IXf(i, j)] - flat[IXf(i, j)]));
+  check(app.run("depthGrid") !== null && d / 2.5 < 0.02, "a uniformly raised bed leaves the flow unchanged", `max |u - flat| ${(d / 2.5 * 100).toFixed(2)}% of inflow`);
+
+  app.setBedPoints(savedBed); app.run("bedXSections = globalThis.__xs", (globalThis.__xs = savedXS)); app.rebuildUserBedGrid();
+  app.setObstacles(savedObs); app.run("solidMaskDirty = true");
 }
 
 // ---------------------------------------------------------------- 10. site extension point
