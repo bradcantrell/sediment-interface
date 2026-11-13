@@ -12,7 +12,15 @@
 //   6. every visible strip is clickable — draw and hit-test share one geometry
 //   7. Space unpauses exactly once  — no double-toggle between keyPressed and the window
 //   8. the friction brush is three-state — fric+ adds, fric- takes back toward zero
-//   9. nothing has gone non-finite
+//   9. still water stays within its stated residual
+//  10. the site extension point works — a backend mounts once, runs every frame, gets its
+//                                     keys, and sceneState() describes the drawn scene
+//  11. the site's own checks       — dev/site_checks.js next to the page, if there is one
+//  12. nothing has gone non-finite
+//
+// index.html is the shared interface and loads site.js after its own script. The harness
+// does the same: site.js is appended to the inline script, so a site's backend is loaded
+// and exercised exactly as the page would load it.
 //
 // Exits 0 on pass, 1 on any failure, so it can gate a commit.
 //
@@ -240,10 +248,21 @@ const blocks = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(function 
 const src = blocks.find(function (b) { return b.indexOf('function setup') >= 0; });
 if (!src) { console.error('FAIL: no inline <script> containing setup()'); process.exit(1); }
 
+// site.js, when the page asks for it. Same scope as the inline script, as in the browser.
+const ROOT = path.dirname(path.resolve(HTML));
+const sitePath = path.join(ROOT, "site.js");
+const wantsSite = /<script src="site\.js"><\/script>/.test(html);
+const siteSrc = wantsSite && fs.existsSync(sitePath) ? fs.readFileSync(sitePath, "utf8") : "";
+if (wantsSite && !siteSrc) console.log("note: the page loads site.js but there is none next to it");
+
 // ---------------------------------------------------------------- fluvial app bridge
 try {
-  new Function(src + `
+  new Function(src + "\n;" + siteSrc + `
 ;globalThis.__app = {
+  // Evaluate in the app's own scope. Site checks use this to reach whatever their site.js
+  // defines, so the harness does not have to list each site's functions.
+  run: (code) => eval(code),
+  keyPressed: typeof keyPressed==='function'?keyPressed:null,
   setup: typeof setup==='function'?setup:null,
   draw: typeof draw==='function'?draw:null,
   updateParticles: typeof updateParticles==='function'?updateParticles:null,
@@ -309,6 +328,17 @@ const check = (ok, label, detail) => {
 };
 
 console.log(`defaults from markup: ${Object.keys(DEFAULTS).length} controls`);
+
+// A probe backend, registered before setup() the way a site.js would be. It records what the
+// interface calls, so the extension point is tested whatever site.js this page has.
+globalThis.__probe = { mounts: 0, slot: null, frames: 0, keyHits: 0 };
+app.run(`registerBackend({
+  id: '__probe',
+  mount(slot) { globalThis.__probe.mounts++; globalThis.__probe.slot = slot; },
+  frame() { globalThis.__probe.frames++; },
+  keys: { q: () => { globalThis.__probe.keyHits++; }, f: () => { globalThis.__probe.keyHits += 100; } },
+  help: 'Q probe',
+})`);
 
 // ---------------------------------------------------------------- 1. setup
 try {
@@ -485,7 +515,48 @@ const STILL_TOL_MAX  = 1.50;   // measured ~0.71
         `mean ${s.mean.toFixed(3)} (tol ${STILL_TOL_MEAN}), max ${s.max.toFixed(3)} (tol ${STILL_TOL_MAX})`);
 }
 
-// ---------------------------------------------------------------- 10. nothing has gone non-finite
+// ---------------------------------------------------------------- 10. site extension point
+{
+  const pr = globalThis.__probe;
+  check(pr.mounts === 1 && pr.slot && pr.slot.id === "site-slot",
+        "a backend is mounted once, into the sidebar slot", `${pr.mounts} mount(s), slot ${pr.slot ? pr.slot.id : "none"}`);
+
+  const f0 = pr.frames;
+  for (let i = 0; i < 25; i++) app.draw();
+  check(pr.frames - f0 === 25, "a backend's frame() runs once per drawn frame", `${pr.frames - f0} calls in 25 draws`);
+
+  // p5 sets the global \`key\` before calling keyPressed(). A backend gets its own keys, and
+  // never a key the interface already uses (F toggles the flow field).
+  const flow0 = app.run("showFlow");
+  globalThis.key = "Q"; app.keyPressed();
+  globalThis.key = "f"; app.keyPressed();
+  check(pr.keyHits === 1 && app.run("showFlow") !== flow0,
+        "a backend receives its keys, and the interface keeps its own", `probe hits ${pr.keyHits}`);
+  globalThis.key = "f"; app.keyPressed();          // put the flow overlay back
+
+  app.setObstacles([{ type: "circle", x: 300, y: 200, w: 50, h: 50, size: 50, rotation: 0, clips: [{ start: 0, dur: Infinity }] },
+                    { type: "poly", x: 500, y: 300, rotation: 15, points: [{ x: -20, y: -20 }, { x: 20, y: -20 }, { x: 0, y: 25 }], clips: [{ start: 0, dur: Infinity }] }]);
+  const sc = app.run("sceneState()");
+  const okScene = sc && sc.obstacles.length === 2 && sc.obstacles[0].points === undefined &&
+                  (sc.obstacles[1].points || []).length === 3 && sc.inflow === S().inflowVel &&
+                  sc.width === S().width && sc.height === S().height &&
+                  sc.bed_profile === S().bedPoints && Array.isArray(sc.bed_xsections);
+  check(okScene, "sceneState() describes the drawn scene", sc ? `${sc.obstacles.length} obstacles, ${sc.bed_profile.length} bed points, inflow ${sc.inflow}` : "nothing returned");
+  app.setObstacles([]);
+  app.run("solidMaskDirty = true");
+}
+
+// ---------------------------------------------------------------- 11. the site's own checks
+{
+  const siteChecks = path.join(ROOT, "dev", "site_checks.js");
+  if (fs.existsSync(siteChecks)) {
+    require(siteChecks)({ app, S, check, ROOT, HTML: path.resolve(HTML), html, siteSrc });
+  } else {
+    console.log("  (no dev/site_checks.js for this site)");
+  }
+}
+
+// ---------------------------------------------------------------- 12. nothing has gone non-finite
 {
   for (let i = 0; i < 30; i++) app.draw();
   const P = S().particles;

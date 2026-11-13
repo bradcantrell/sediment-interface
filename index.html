@@ -6,7 +6,6 @@
   <title>Sediment Interface</title>
   <script>p5.disableFriendlyErrors = true;</script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
-  <script src="bridge/case_generator.js"></script>
   <style>
     html, body {
       margin: 0; padding: 0; overflow: hidden;
@@ -107,9 +106,11 @@
       text-align: center; transition: opacity 0.3s;
     }
 
-    #export-result {
-      font-size: 10px; color: rgba(255,255,255,0.4); line-height: 1.5;
-      pointer-events: none; max-width: 260px;
+    /* Whatever a site's backend mounts into #site-slot (see SITE EXTENSION POINT). */
+    #site-slot button { width: 100%; margin-bottom: 4px; }
+    #site-slot .site-result {
+      font-size: 9px; color: rgba(255,255,255,0.35); line-height: 1.4;
+      margin-bottom: 6px; max-width: 100%;
     }
   </style>
 </head>
@@ -121,8 +122,7 @@
       shape: <span class="hv" id="shape">rect</span> &phi;: <span class="hv" id="rot">0</span>&deg;<br>
       <span class="hw" id="paused"></span>
     </div>
-    <button id="export-btn" style="width:100%;margin-bottom:4px;" onclick="exportToOpenFOAM()">⬇ EXPORT CASE</button>
-    <div id="export-result" style="font-size:9px;color:rgba(255,255,255,0.35);line-height:1.4;margin-bottom:6px;max-width:100%;"></div>
+    <div id="site-slot"></div>
     <canvas id="bed-thumb" width="250" height="175" style="width:100%;height:auto;border:1px solid rgba(255,200,100,0.1);border-radius:3px;cursor:grab;"></canvas>
     <div class="ctrl-row" style="justify-content:space-between;">
       <span style="font-size:8px;color:rgba(255,255,255,0.2);">z-scale</span>
@@ -177,7 +177,7 @@
 
 <div id="timeline-bar"><canvas id="timeline-canvas"></canvas></div>
 
-<div id="help" style="position:fixed;bottom:8px;left:50%;transform:translateX(-50%);font-size:10px;color:rgba(255,255,255,0.2);pointer-events:none;z-index:5;text-align:center;">1 circle &middot; 2 rect &middot; 3 freeform &middot; click place &middot; drag move &middot; drag handle resize &middot; wheel rotate &middot; [ ] size &middot; backspace delete &middot; F flow &middot; G grid &middot; H help &middot; M bed &middot; space pause &middot; S save</div>
+<div id="help" style="position:fixed;bottom:8px;left:50%;transform:translateX(-50%);font-size:10px;color:rgba(255,255,255,0.2);pointer-events:none;z-index:5;text-align:center;">1 circle &middot; 2 rect &middot; 3 freeform &middot; click place &middot; drag move &middot; drag handle resize &middot; wheel rotate &middot; [ ] size &middot; backspace delete &middot; F flow &middot; G grid &middot; H help &middot; M bed &middot; space pause &middot; S save<span id="help-site"></span></div>
 
 <script>
 // ─────────────────────────────────────────────
@@ -1576,6 +1576,7 @@ function setup() {
 
   for (let k=0; k<80; k++) { simTime+=DT; buildSolidMask(); velocityStep(); }
   initParticles();
+  mountBackends();
 }
 
 function draw() {
@@ -1629,6 +1630,7 @@ function draw() {
     for (let j=0;j<=NY;j+=ms){let y=j*cellH;line(0,y,width,y);}
   }
 
+  backendFrame();
   updateHUD();
 }
 
@@ -1937,6 +1939,7 @@ function keyPressed() {
   else if (key==='Escape') { selectedIdx=-1; dragging=false; resizeDrag=null; polyVertexDrag=null; polyPoints=[]; if(bedMode)bedMode=false; }
   else if (key==='m'||key==='M') { bedMode=!bedMode; if(bedMode){paused=true; refreshBedGeometry();} }
   else if (key==='s'||key==='S') { saveCanvas('sediment-'+floor(simTime),'png'); }
+  else backendKey(key);
   return false;
 }
 
@@ -2187,72 +2190,73 @@ function updateTimelineVisibility() {
 }
 
 // ─────────────────────────────────────────────
-// OPENFOAM EXPORT (client-side case generator, no server)
+// SITE EXTENSION POINT
 // ─────────────────────────────────────────────
+// This file is the shared interface. It is identical in every repo that uses it, and what a
+// repo does with the scene (export a case, bake it on a solver, compare against a reference)
+// lives in that repo's site.js, loaded after this script. A backend is a plain object:
+//
+//   registerBackend({
+//     id:    'export',                 // unique name
+//     title: 'Sediment Interface',     // optional, sets the page title
+//     mount(slot) {},                  // optional, add controls to the sidebar slot, once
+//     frame() {},                      // optional, runs every frame after the scene is drawn
+//     keys:  { b: fn },                // optional, lower-case key -> handler
+//     help:  'B bake',                 // optional, appended to the key list
+//   });
+//
+// site.js runs in this script's scope, so a backend reads the solver state directly (u, v,
+// solid, IX, NX, NY, cellW, cellH, inflowVel) and draws with p5. sceneState() is the one
+// description of the drawn scene; send that, not a hand-built copy.
+// Keys the interface already uses (see keyPressed) are not offered to backends.
+const backends = [];
+let backendsMounted = false;
 
-function decodePngToHeights(dataUrl) {
-  return new Promise(function (resolve) {
-    try {
-      const img = new Image();
-      img.onload = function () {
-        const c = document.createElement('canvas');
-        c.width = img.width; c.height = img.height;
-        const ctx = c.getContext('2d');
-        ctx.drawImage(img, 0, 0);
-        const d = ctx.getImageData(0, 0, img.width, img.height).data;
-        const h = [];
-        for (let y = 0; y < img.height; y++) {
-          const row = [];
-          for (let x = 0; x < img.width; x++) {
-            const idx = (y * img.width + x) * 4;
-            row.push((0.299 * d[idx] + 0.587 * d[idx + 1] + 0.114 * d[idx + 2]) / 255);
-          }
-          h.push(row);
-        }
-        resolve(h);
-      };
-      img.onerror = function () { resolve(null); };
-      img.src = dataUrl;
-    } catch (e) { resolve(null); }
-  });
+function registerBackend(b) {
+  if (!b || !b.id) throw new Error('registerBackend: a backend needs an id');
+  if (backends.some(x => x.id === b.id)) throw new Error('registerBackend: duplicate id ' + b.id);
+  backends.push(b);
+  if (backendsMounted) mountBackend(b);
 }
 
-async function exportToOpenFOAM() {
-  const result = document.getElementById('export-result');
-  const btn = document.getElementById('export-btn');
-  if (typeof SedimentCaseGenerator === 'undefined') {
-    result.innerHTML = '<span style="color:#f66">case_generator.js not loaded</span>';
-    return;
+function mountBackend(b) {
+  if (b.title) document.title = b.title;
+  if (b.mount) b.mount(document.getElementById('site-slot'));
+  if (b.help) {
+    const h = document.getElementById('help-site');
+    if (h) h.innerHTML += ' &middot; ' + b.help;
   }
-  try {
-    btn.textContent = 'PACKING...';
-    let heightsPng = null;
-    try { heightsPng = await decodePngToHeights(depoBuffer.elt.toDataURL('image/png')); }
-    catch (e) { heightsPng = null; }
-    const state = {
-      obstacles: obstacles.map(o => ({ type:o.type, x:o.x, y:o.y, w:o.w, h:o.h, rotation:o.rotation, points:(o.points&&o.type==='poly') ? o.points.map(p=>({x:p.x, y:p.y})) : undefined })),
-      inflow: inflowVel, width, height,
-      bed_profile: bedPoints, bed_xsections: bedXSections, heightsPng: heightsPng
-    };
-    const { files, meta } = SedimentCaseGenerator.generateCase(state);
-    const zipBytes = SedimentCaseGenerator.buildZip(files);
-    const blob = new Blob([zipBytes], { type: 'application/zip' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = 'sediment-openfoam-case.zip';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    const what = meta.nObstacles + ' obstacle(s)' + (meta.hasBed ? ' + bed' : '');
-    const run = meta.hasBed
-      ? 'run: blockMesh → python3 apply_bed.py → snappyHexMesh -overwrite → foamRun'
-      : 'run: blockMesh → snappyHexMesh -overwrite → foamRun';
-    result.innerHTML = 'exported ' + what + ' → sediment-openfoam-case.zip<br><span style="color:#888">' + run + '</span>';
-  } catch (e) {
-    result.innerHTML = '<span style="color:#f66">export failed: ' + e.message + '</span>';
+}
+
+function mountBackends() {
+  if (backendsMounted) return;
+  backendsMounted = true;
+  for (const b of backends) mountBackend(b);
+}
+
+function backendFrame() { for (const b of backends) if (b.frame) b.frame(); }
+
+function backendKey(k) {
+  k = String(k).toLowerCase();
+  for (const b of backends) {
+    if (b.keys && typeof b.keys[k] === 'function') { b.keys[k](); return true; }
   }
-  btn.textContent = 'EXPORT CASE';
+  return false;
+}
+
+// The drawn scene, in canvas pixels. Every backend sends or exports this.
+function sceneState() {
+  return {
+    obstacles: obstacles.map(o => ({
+      type: o.type, x: o.x, y: o.y, w: o.w, h: o.h, rotation: o.rotation,
+      points: (o.points && o.type === 'poly') ? o.points.map(p => ({ x: p.x, y: p.y })) : undefined,
+    })),
+    inflow: inflowVel, width, height,
+    bed_profile: bedPoints, bed_xsections: bedXSections,
+  };
 }
 
 </script>
+<script src="site.js"></script>
 </body>
 </html>
