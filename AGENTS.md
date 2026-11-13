@@ -36,11 +36,11 @@ and the simulation was dead along with every listener attached after the throw.
 
     node dev/headless_harness.js index.html    # exit 0 = pass, 1 = fail
 
-Twenty-two checks (twenty shared, two from `dev/site_checks.js`), all on model state rather than pixels: `setup()` completes, the draw loop
+Twenty-five checks (twenty-three shared, two from `dev/site_checks.js`), all on model state rather than pixels: `setup()` completes, the draw loop
 advances simulation time, particles move downstream, the friction slider reaches the
 solver, a drawn transect edits the bed, every visible strip is clickable, Space unpauses
-exactly once, the friction brush adds and subtracts, still water holds a steady spurious
-current within stated tolerances, flow over a drawn rise speeds up by the depth ratio and
+exactly once, the friction brush adds and subtracts, still water stays still and leftover
+motion stays within its stated bound, deposit counts as bed, flow over a drawn rise speeds up by the depth ratio and
 conserves discharge, a backend mounts once and gets its frame and its keys,
 `sceneState()` describes the drawn scene, the case generator builds a case from it, and
 nothing goes non-finite.
@@ -58,18 +58,24 @@ Rules that have earned their place:
   handlers so the Space path can be invoked directly; dispatching a `KeyboardEvent` at the
   page does not work headlessly, and p5's own `keyPressed` is not reached.
 
-The drawn bed is in the flow. With a bed drawn, `velocityStep()` uses `projectDepth()`,
-which conserves discharge (`div(h u) = 0`) on a relative depth grid built from the drawn bed
-with the same px-to-metre mapping as the export. With no bed it runs the plain `project()`
-exactly as before. Things that were measured and are easy to undo by accident:
+The bed is in the flow, drawn and deposited. With either present, `velocityStep()` uses
+`projectDepth()`, which conserves discharge (`div(h u) = 0`) on a relative depth grid with
+the same px-to-metre mapping as the export. With neither it runs the plain `project()`
+exactly as before. Each of these was measured and is covered by a check; do not undo them:
 
-- **`projectDepth()` keeps its pressure between frames and has an open outflow.** Started
-  from zero each frame, 30 sweeps gave a 1% speed-up over a rise that should give 33%. With
-  the carried pressure but the outflow closed like `project()`'s, the mismatch grew into a
-  steady false source (discharge rising downstream). Both are covered by checks.
-- Only the drawn bed counts as depth, not accumulated deposit. The export sends the same.
-- The still-water residual comes from the pressure projection, and that is what the
-  tolerance in the harness documents.
+- **`projectDepth()` starts from `sectionPressure()`**, an exact tridiagonal solve of the
+  along-channel pressure. Started from zero, 30 sweeps gave a 1% speed-up over a rise that
+  should give 33%.
+- **It does not carry pressure between frames.** That also converges, and it kicks the field
+  by up to ten times the inflow speed whenever the flow changes abruptly.
+- **The outflow is open** (`setBndPressureOpen`). Closed like `project()`'s, a converged
+  solve turns the inflow/outflow mismatch into a false source.
+- **A solid neighbour stands in the cell's own pressure in the velocity correction.**
+  Pressure is measured from the outflow and is large upstream; reading a solid cell's zero
+  blew the flow up next to obstacles.
+- Deposit is averaged over the flow cell before it becomes depth.
+- Against OpenFOAM on a drawn rise with one obstacle (880k cells, 2026-11-13): RMS
+  difference 23% -> 15% of inflow, bias -15% -> -1%, correlation -0.07 -> 0.51.
 
 ## tidal-prototype.html — tidal model (dev copy)
 

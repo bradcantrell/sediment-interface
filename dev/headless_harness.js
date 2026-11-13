@@ -12,9 +12,10 @@
 //   6. every visible strip is clickable — draw and hit-test share one geometry
 //   7. Space unpauses exactly once  — no double-toggle between keyPressed and the window
 //   8. the friction brush is three-state — fric+ adds, fric- takes back toward zero
-//   9. still water stays within its stated residual
+//   9. still water stays still, and leftover motion stays within its stated bound
 //  9b. the drawn bed reaches the flow — flow speeds up over a rise by the depth ratio,
-//                                     discharge is conserved, a uniform rise changes nothing
+//                                     discharge is conserved, a uniform rise changes nothing,
+//                                     and accumulated deposit counts as bed
 //  10. the site extension point works — a backend mounts once, runs every frame, gets its
 //                                     keys, and sceneState() describes the drawn scene
 //  11. the site's own checks       — dev/site_checks.js next to the page, if there is one
@@ -481,8 +482,24 @@ try {
 // The tolerances below lock in current behaviour rather than demand the ideal: roughly twice
 // the measured value, so a regression fires and an improvement does not. They must not be
 // raised to make a worse solver pass — that is how a bad model starts scoring well.
-const STILL_TOL_MEAN = 0.15;   // measured 0.080; ~6% of the 2.5 flowing mean
-const STILL_TOL_MAX  = 1.50;   // measured ~0.71
+//
+// Revised 2026-11-13, when the bed (drawn and deposited) entered the velocity solver:
+//
+//   - The residual above is not generated from rest. This block zeroes u and v but not
+//     vPrev, and velocityStep() advects vPrev into v, so the run starts with the previous
+//     check's cross-flow still in it. Zero vPrev and uPrev as well and the field stays at
+//     exactly 0 for 3000 steps, over a sloping bed with deposit on it. That is now check 9a,
+//     and it is the well-balanced property the first note called vacuous: there is a bed
+//     coupling now, and it does not move still water.
+//   - What 9b measures is therefore leftover motion with the inflow shut. It neither decays
+//     nor grows in either projection (sum of u^2 + v^2 over 3000 steps: plain 94 -> 145,
+//     depth-weighted 218 -> 144).
+//   - STILL_TOL_MEAN goes from 0.15 to 0.30. Reason: this block draws a bed, so it now runs
+//     through projectDepth(), where the same leftover measures 0.11 to 0.17 across runs
+//     (deposit positions are random) against 0.08 to 0.10 in project(). 0.30 is twice the
+//     measured value, the same rule as before. STILL_TOL_MAX is unchanged.
+const STILL_TOL_MEAN = 0.30;   // measured 0.11-0.17 through projectDepth(); was 0.15 for 0.080 through project()
+const STILL_TOL_MAX  = 1.50;   // measured 0.7-1.0
 {
   const U = S().U, V = S().V;
   app.setInflow(0);
@@ -491,7 +508,6 @@ const STILL_TOL_MAX  = 1.50;   // measured ~0.71
   app.setBedPoints([{ x: w * 0.15, z: 10 }, { x: w * 0.5, z: 120 }, { x: w * 0.85, z: 20 }]);
   app.rebuildUserBedGrid();
   app.updateBedBuffer();
-  U.fill(0); V.fill(0);
   const sample = () => {
     let mx = 0, s = 0, c = 0;
     for (let i = 0; i < U.length; i++) {
@@ -502,6 +518,19 @@ const STILL_TOL_MAX  = 1.50;   // measured ~0.71
     }
     return { max: mx, mean: s / Math.max(c, 1) };
   };
+  // 9a. From true rest nothing may move, bed or no bed. The whole solver state is zeroed,
+  // then restored, so 9b still starts from the leftover cross-flow it has always measured.
+  {
+    const keep = app.run("[u.slice(), v.slice(), uPrev.slice(), vPrev.slice()]");
+    app.run("u.fill(0); v.fill(0); uPrev.fill(0); vPrev.fill(0)");
+    for (let k = 0; k < 600; k++) app.velocityStep();
+    const r = sample();
+    check(app.run("depthGrid") !== null && r.max < 1e-9,
+          "still water over a sloping bed stays still", `max |u|+|v| ${r.max.toExponential(1)} after 600 steps, bed in the solver: ${app.run("depthGrid") !== null}`);
+    globalThis.__keep = keep;
+    app.run("u.set(globalThis.__keep[0]); v.set(globalThis.__keep[1]); uPrev.set(globalThis.__keep[2]); vPrev.set(globalThis.__keep[3])");
+  }
+  U.fill(0); V.fill(0);
   const marks = [120, 360, 1200];
   const out = [];
   let done = 0;
@@ -513,7 +542,7 @@ const STILL_TOL_MAX  = 1.50;   // measured ~0.71
   console.log("  ....  still water: " + out.join(" | ") + "   (target 0 for both)");
   const s = sample();
   check(isFinite(s.max) && s.mean <= STILL_TOL_MEAN && s.max <= STILL_TOL_MAX,
-        "still water holds a steady (non-zero) spurious current",
+        "leftover motion with the inflow shut stays bounded",
         `mean ${s.mean.toFixed(3)} (tol ${STILL_TOL_MEAN}), max ${s.max.toFixed(3)} (tol ${STILL_TOL_MAX})`);
 }
 
@@ -524,6 +553,7 @@ const STILL_TOL_MAX  = 1.50;   // measured ~0.71
   const st0 = S(), w = st0.width, NX = st0.NX, NY = st0.NY, IXf = (i, j) => i + j * (NX + 2);
   const savedBed = st0.bedPoints, savedXS = app.run("bedXSections"), savedObs = st0.obstacles;
   app.setObstacles([]);
+  app.run("depoGrid.fill(0)");          // earlier checks left deposit, which is bed now
   app.run("bedXSections = []; friction = 0; fricGrid = null; fricDirty = true; solidMaskDirty = true; buildSolidMask()");
   app.setInflow(2.5);
   // Time-mean u for a bed, started from uniform flow so no run inherits the last one's field.
@@ -560,6 +590,27 @@ const STILL_TOL_MAX  = 1.50;   // measured ~0.71
   const raised = runMean([{ x: 0, z: 100 }, { x: w, z: 100 }]);
   let d = 0; for (let j = 1; j <= NY; j++) for (let i = 1; i <= NX; i++) d = Math.max(d, Math.abs(raised[IXf(i, j)] - flat[IXf(i, j)]));
   check(app.run("depthGrid") !== null && d / 2.5 < 0.02, "a uniformly raised bed leaves the flow unchanged", `max |u - flat| ${(d / 2.5 * 100).toFixed(2)}% of inflow`);
+
+  // Accumulated deposit is bed too. A band of deposit across the channel, with nothing drawn,
+  // must speed the flow up by the depth ratio just as a drawn rise does.
+  {
+    const h = st0.height, x0 = w * 0.45, x1 = w * 0.55;
+    app.run("depoGrid.fill(0)");
+    for (let pass = 0; pass < 40; pass++)
+      for (let y = 2; y < h; y += 4) for (let x = x0; x <= x1; x += 4) app.run("addDeposit")(x, y, 4);
+    const depo = runMean([]);
+    const Hd = app.run("depthGrid");
+    if (!Hd) check(false, "accumulated deposit shallows the flow like a drawn bed", "no depth grid with deposit on the bed");
+    else {
+      const ic = Math.round((w * 0.5) / st0.cellW), up = col(depo, 6), over = col(depo, ic), want = Hd[IXf(6, NY >> 1)] / Hd[IXf(ic, NY >> 1)];
+      check(want > 1.05 && Math.abs(over / up / want - 1) < 0.03,
+            "accumulated deposit shallows the flow like a drawn bed", `u over deposit/upstream ${(over / up).toFixed(3)}, depth ratio ${want.toFixed(3)}`);
+    }
+    app.run("depoGrid.fill(0)");
+    const cleared = runMean([]);
+    check(app.run("depthGrid") === null && Math.abs(col(cleared, NX >> 1) - 2.5) < 0.01,
+          "clearing the deposit returns the solver to its plain projection", `mid-channel u ${col(cleared, NX >> 1).toFixed(3)}`);
+  }
 
   app.setBedPoints(savedBed); app.run("bedXSections = globalThis.__xs", (globalThis.__xs = savedXS)); app.rebuildUserBedGrid();
   app.setObstacles(savedObs); app.run("solidMaskDirty = true");

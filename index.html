@@ -637,62 +637,107 @@ function project(uVec, vVec, pArr, divArr) {
 // Depth is relative, 1 = the full water column, from the same mapping the OpenFOAM export
 // uses (bridge/case_generator.js: a 2.0 m channel, and 160 px of drawn bed is 0.5 m of
 // relief, clamped there). So 640 px of bed would be the surface, and a drawn bed takes away
-// at most a quarter of the depth. Only the drawn bed counts, not accumulated deposit, which
-// is also all the export sends.
-// With no bed drawn depthGrid is null and the solver runs the plain projection, unchanged.
+// at most a quarter of the depth. Accumulated deposit sits on top of the drawn bed at the
+// same scale (up to DEPO_MAX, another quarter), so the flow responds as sediment builds up:
+// it runs faster over a growing bar, which in turn slows the settling there.
+// The depth is refreshed whenever the bed surface is (every 0.5 s of running, and on edits).
+// With no bed drawn and nothing deposited depthGrid is null and the solver runs the plain
+// projection, unchanged.
 const WATER_DEPTH_PX = 640;
 const BED_RELIEF_MAX_PX = 160;
 const DEPTH_SOR = 1.7;                     // over-relaxation for the depth-weighted pressure solve
 let depthGrid = null, depthDirty = true;
-let pBedA = null, pBedB = null;            // pressures carried between frames, one per projection
+let secA = null, secD = null, secP = null, secC = null;   // per-column work arrays for sectionPressure()
 
 function rebuildDepthGrid() {
   depthDirty = false;
-  if (bedPoints.length < 2) { depthGrid = null; return; }
-  if (!depthGrid) { depthGrid = new Float32Array(SIZE); pBedA = new Float32Array(SIZE); pBedB = new Float32Array(SIZE); }
+  let hasDepo = false;
+  if (depoGrid) { for (let k = 0; k < depoGrid.length; k++) { if (depoGrid[k] > 0) { hasDepo = true; break; } } }
+  if (bedPoints.length < 2 && !hasDepo) { depthGrid = null; return; }
+  if (!depthGrid) { depthGrid = new Float32Array(SIZE); secA = new Float64Array(NX + 2); secD = new Float64Array(NX + 2); secP = new Float64Array(NX + 2); secC = new Float64Array(NX + 2); }
+  let qx = cellW / 4, qy = cellH / 4;
   for (let j = 0; j <= NY + 1; j++) {
     let y = Math.min(NY, Math.max(1, j)) * cellH;          // boundary cells copy their neighbour
     for (let i = 0; i <= NX + 1; i++) {
       let x = Math.min(NX, Math.max(1, i)) * cellW;
       let z = Math.min(BED_RELIEF_MAX_PX, Math.max(0, computeUserBedZ(x, y)));
+      // Deposit is stored on a finer grid than the flow and is spiky particle by particle.
+      // Average it over the flow cell so one grain does not put a step in the depth.
+      if (hasDepo) z += 0.25 * (depoZ(x - qx, y - qy) + depoZ(x + qx, y - qy) + depoZ(x - qx, y + qy) + depoZ(x + qx, y + qy));
       depthGrid[IX(i, j)] = 1 - z / WATER_DEPTH_PX;
     }
   }
 }
 
-// Pressure boundary for a solve that is run to convergence: walls and the inflow hold no
-// gradient (the inflow speed is prescribed), and the outflow is open, pressure zero at the
-// outflow face. project() copies at both ends, which leaves nothing able to adjust the
-// outflow when inflow and outflow discharge disagree; it gets away with that because it
-// never converges. Carried between frames, that mismatch grew into a steady false source.
+// Pressure boundary for the depth-weighted solve: walls and the inflow hold no gradient (the
+// inflow speed is prescribed), and the outflow is open, pressure zero at the outflow face.
+// project() copies at both ends, which leaves nothing able to adjust the outflow when inflow
+// and outflow discharge disagree. It gets away with that because it never converges; a solve
+// that does converge turns the mismatch into a steady false source (discharge rising
+// downstream), which is what happened here with the outflow closed.
 function setBndPressureOpen(x) {
   for (let j = 1; j <= NY; j++) { x[IX(0, j)] = x[IX(1, j)]; x[IX(NX+1, j)] = -x[IX(NX, j)]; }
   for (let i = 0; i <= NX + 1; i++) { x[IX(i, 0)] = x[IX(i, 1)]; x[IX(i, NY+1)] = x[IX(i, NY)]; }
 }
 
-// project() with depth weights. With every depth equal it solves the same equation as project().
-//
-// It differs in how it gets there. project() starts each solve from zero pressure, and 30
-// sweeps only settle short-range imbalances. That is enough on a flat bed, where the field
-// arriving is already nearly balanced. A bed asks for a channel-long adjustment (all the flow
-// upstream of a rise has to learn about it), which 30 cold sweeps cannot deliver: measured,
-// flow over a full-width rise that should speed up by a third sped up by 1%. So each of the
-// two projections in a step keeps its pressure from the previous frame as the starting
-// guess (pArr is NOT cleared), and the sweep is over-relaxed. The solve then converges
-// across frames, in about a second of running after a bed edit.
+// The along-channel part of the pressure, solved exactly: one unknown per column, the
+// equations of projectDepth() summed across each section, a tridiagonal system. A bed asks
+// for a channel-long adjustment (all the flow upstream of a rise has to learn about it), and
+// 30 sweeps from zero only settle short-range imbalances: measured, flow over a full-width
+// rise that should speed up by a third sped up by 1%. This gives the sweeps that long-range
+// answer as their starting point, fresh every call.
+// (Carrying the pressure from the previous frame also converges, and was tried. It kicks the
+// field whenever the flow changes abruptly, by up to ten times the inflow speed for a few
+// frames, because the carried pressure belongs to a flow that is no longer there.)
+function sectionPressure(pArr, divArr) {
+  const H = depthGrid, A = secA, D = secD, P = secP, C = secC;
+  // A[i] couples column i to column i+1; D[i] is the section's summed divergence.
+  for (let i = 1; i <= NX; i++) {
+    let a = 0, d = 0;
+    for (let j = 1; j <= NY; j++) {
+      let idx = IX(i, j);
+      if (solid[idx]) continue;
+      d += divArr[idx];
+      let R = IX(i+1, j);
+      if (i < NX ? !solid[R] : true) a += 0.5 * (H[idx] + H[R]);
+    }
+    A[i] = a; D[i] = d;
+  }
+  // -A[i-1] P[i-1] + (A[i-1] + A[i]) P[i] - A[i] P[i+1] = D[i], with no gradient at the inflow
+  // (A[0] = 0) and P[NX+1] = -P[NX] at the open outflow. Thomas algorithm.
+  A[0] = 0;
+  let prevC = 0, prevP = 0;
+  for (let i = 1; i <= NX; i++) {
+    let lo = A[i-1], up = (i < NX) ? A[i] : 0;
+    let diag = lo + A[i] + (i === NX ? A[i] : 0);
+    let den = diag - lo * prevC;
+    if (den < 1e-9) { C[i] = 0; P[i] = 0; prevC = 0; prevP = 0; continue; }   // a fully blocked section
+    C[i] = up / den;
+    P[i] = (D[i] + lo * prevP) / den;
+    prevC = C[i]; prevP = P[i];
+  }
+  for (let i = NX - 1; i >= 1; i--) P[i] += C[i] * P[i+1];
+  for (let j = 1; j <= NY; j++)
+    for (let i = 1; i <= NX; i++) { let idx = IX(i, j); pArr[idx] = solid[idx] ? 0 : P[i]; }
+}
+
+// project() with depth weights. With every depth equal it solves the same equation as
+// project(), starting from sectionPressure() instead of zero and with an open outflow.
 function projectDepth(uVec, vVec, pArr, divArr) {
   const H = depthGrid;
   for (let j = 1; j <= NY; j++) {
     for (let i = 1; i <= NX; i++) {
       let idx = IX(i, j);
-      if (solid[idx]) { divArr[idx] = 0; pArr[idx] = 0; continue; }
+      if (solid[idx]) { divArr[idx] = 0; continue; }
       let R = IX(i+1, j), L = IX(i-1, j), T = IX(i, j+1), B = IX(i, j-1);
       let qR = solid[R] ? 0 : H[R] * uVec[R], qL = solid[L] ? 0 : H[L] * uVec[L];
       let qT = solid[T] ? 0 : H[T] * vVec[T], qB = solid[B] ? 0 : H[B] * vVec[B];
       divArr[idx] = -0.5 * (qR - qL + qT - qB);
     }
   }
-  setBnd(0, divArr); setBndPressureOpen(pArr);
+  setBnd(0, divArr);
+  sectionPressure(pArr, divArr);
+  setBndPressureOpen(pArr);
   for (let iter = 0; iter < GAUSS_SEIDEL_ITERS; iter++) {
     for (let j = 1; j <= NY; j++) {
       for (let i = 1; i <= NX; i++) {
@@ -713,8 +758,14 @@ function projectDepth(uVec, vVec, pArr, divArr) {
     for (let i = 1; i <= NX; i++) {
       let idx = IX(i, j);
       if (solid[idx]) continue;
-      uVec[idx] -= 0.5 * (pArr[IX(i+1, j)] - pArr[IX(i-1, j)]);
-      vVec[idx] -= 0.5 * (pArr[IX(i, j+1)] - pArr[IX(i, j-1)]);
+      // A wall holds no pressure gradient, so a solid neighbour stands in this cell's own
+      // pressure. project() reads the solid cell's stored zero instead, which is harmless
+      // there because its pressures stay near zero. Here pressure is measured from the open
+      // outflow and is large upstream, and reading a zero next to an obstacle kicked the
+      // flow there by hundreds of times the inflow speed.
+      let R = IX(i+1, j), L = IX(i-1, j), T = IX(i, j+1), B = IX(i, j-1), pc = pArr[idx];
+      uVec[idx] -= 0.5 * ((solid[R] ? pc : pArr[R]) - (solid[L] ? pc : pArr[L]));
+      vVec[idx] -= 0.5 * ((solid[T] ? pc : pArr[T]) - (solid[B] ? pc : pArr[B]));
     }
   setBnd(1, uVec); setBnd(2, vVec);
 }
@@ -731,10 +782,10 @@ function velocityStep() {
     }
   }
   diffuse(1, uPrev, u, VISC);
-  if (bed) projectDepth(uPrev, vPrev, pBedA, divArr); else project(uPrev, vPrev, p, divArr);
+  if (bed) projectDepth(uPrev, vPrev, p, divArr); else project(uPrev, vPrev, p, divArr);
   advect(1, u, uPrev, uPrev, vPrev);
   advect(2, v, vPrev, uPrev, vPrev);
-  if (bed) projectDepth(u, v, pBedB, divArr); else project(u, v, p, divArr);
+  if (bed) projectDepth(u, v, p, divArr); else project(u, v, p, divArr);
 
   // Bed friction: exponential drag per step. With none, the field keeps near-inflow speed
   // everywhere, particles never drop below settleThresh, and almost nothing deposits.
@@ -1999,6 +2050,7 @@ function keyPressed() {
   if (key==='r'||key==='R') {
     simTime=0; initParticles(); depoBuffer.clear(); trailBuffer.clear(); deposited=[];
     if (depoGrid) depoGrid.fill(0);
+    depthDirty = true;
     bedSurface.clear(); updateBedBuffer();
     // Restart preserves bed (bedPoints/bedXSections) and obstacle placement.
     // isObstacleActive keeps obstacles on (timeline off) or re-sequences them from
