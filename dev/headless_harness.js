@@ -13,6 +13,9 @@
 //   3. sediment particles move      — transport is actually running
 //   4. a transect edits the bed     — the editor edits
 //   5. every visible strip is clickable — draw and hit-test share one geometry
+//  5b. the bed editor              — bed mode restores the pause state, a click lands where
+//                                     it is aimed, the model's elevation range is honoured,
+//                                     a cross-section point can be grabbed where it is drawn
 //   6. Space unpauses exactly once  — no double-toggle between keyPressed and the window
 //   7. the model extension point works — the interface steps the model once per frame,
 //                                     mounts its controls, tells it when the bed changes,
@@ -62,6 +65,7 @@ for (const m of html.matchAll(/<select[^>]*id="([^"]+)"[^>]*>([\s\S]*?)<\/select
 // ---------------------------------------------------------------- p5 / DOM mocks
 const noop = () => {};
 const ctx = () => ({
+  remove: noop,                 // p5.Graphics.remove(), called when a buffer is rebuilt
   background: noop, clear: noop, fill: noop, stroke: noop, noStroke: noop, noFill: noop,
   rect: noop, ellipse: noop, line: noop, circle: noop, text: noop, textSize: noop,
   textAlign: noop, push: noop, pop: noop, translate: noop, rotate: noop, scale: noop,
@@ -418,6 +422,73 @@ try {
     if (hit !== si) { ok = false; bad = `station ${si} at (${cx.toFixed(0)},${cy.toFixed(0)}) -> hit ${hit}`; break; }
   }
   check(ok, "every visible profile strip is clickable", bad || `${bp.length} stations agree`);
+}
+
+// ---------------------------------------------------------------- 5b. the bed editor
+// Driven through mousePressed/mouseDragged, the paths a person uses, with p5's mouse globals
+// set by hand.
+{
+  const st = S(), w = st.width, h = st.height, CH = 160;
+  const savedBed = st.bedPoints, savedXS = app.run("bedXSections");
+  const at = (x, y) => { globalThis.mouseX = x; globalThis.mouseY = y; };
+  const press = (x, y) => { at(x, y); app.run("mousePressed")({}); };
+  const drag = (x, y) => { at(x, y); app.run("mouseDragged")({}); };
+  const release = () => app.run("mouseReleased()");
+  const fresh = () => { app.setBedPoints([]); app.run("bedXSections = []; activeXSection = -1"); };
+
+  // Entering bed mode pauses; leaving restores what it was, whichever way it was.
+  app.run("if (bedMode) toggleBedMode()");
+  app.setPaused(false); app.run("toggleBedMode()"); const inRun = S().paused; app.run("toggleBedMode()"); const outRun = S().paused;
+  app.setPaused(true);  app.run("toggleBedMode()"); app.run("toggleBedMode()"); const outHeld = S().paused;
+  check(inRun === true && outRun === false && outHeld === true, "bed mode pauses, and leaving it restores the run as it was",
+        `running: paused ${inRun} inside, ${outRun} after; paused before: ${outHeld} after`);
+
+  app.run("toggleBedMode()");                       // stay in bed mode for the editing checks
+  fresh();
+  press(w * 0.3, h - CH / 2); release();
+  const zMid = S().bedPoints.length === 1 ? S().bedPoints[0].z : NaN;
+  check(Math.abs(zMid - 80) < 0.01, "a click in the transect chart lands at the elevation under the pointer", `half-way up a 0..160 chart gives z = ${zMid}`);
+
+  // Drag that point far above the chart: it stops at the top of the range.
+  press(w * 0.3, h - CH / 2); drag(w * 0.3, h - CH - 300); release();
+  const zTop = S().bedPoints[0].z;
+  check(zTop === 160, "a transect point dragged past the chart stops at the top of the range", `z = ${zTop}`);
+
+  // A model can widen the range to both sides of zero (a coast). Same chart, same mapping.
+  const m = app.run("model"), savedRange = m.bed;
+  m.bed = { zMin: -150, zMax: 170, datumLabel: "still water" };
+  fresh();
+  press(w * 0.3, h - 10); release();                 // near the bottom of the chart
+  press(w * 0.6, h - CH + 10); release();            // near the top
+  const lo = S().bedPoints[0].z, hi = S().bedPoints[1].z;
+  const yLo = app.run("bedChartYOf")(lo), yHi = app.run("bedChartYOf")(hi);
+  check(Math.abs(lo - (-130)) < 0.01 && Math.abs(hi - 150) < 0.01 && Math.abs(yLo - (h - 10)) < 1e-6 && Math.abs(yHi - (h - CH + 10)) < 1e-6,
+        "with a signed range the transect goes below zero, and is drawn where it was clicked", `z ${lo.toFixed(1)} and ${hi.toFixed(1)} in -150..170`);
+  press(w * 0.3, h - 10); drag(w * 0.3, h + 400); release();
+  check(S().bedPoints[0].z === -150, "a transect point dragged below the chart stops at the bottom of the range", `z = ${S().bedPoints[0].z}`);
+  app.rebuildUserBedGrid();
+  const zLine = app.userBedZ(w * 0.32, h * 0.5);
+  check(zLine < -100, "a bed drawn below zero is below zero in the bed itself", `userBedZ just past the low point = ${zLine.toFixed(1)}`);
+  let threw = null; try { for (let i = 0; i < 3; i++) app.draw(); } catch (e) { threw = e; }
+  check(!threw, "the chart draws with a signed range", threw ? threw.message : "clean");
+  m.bed = savedRange;
+
+  // A cross-section point must be grabbable where it is drawn.
+  fresh();
+  press(w * 0.5, h - 40); release();                 // one station, high on the transect (z = 40)
+  const g = app.xsStrip(0), yClick = g.stripY * 0.4, xClick = g.sx + g.w * 0.25;
+  press(xClick, yClick); release();                  // add a profile point in its strip
+  const xs = app.run("bedXSections")[0];
+  const n1 = xs ? xs.points.length : 0;
+  press(xClick, yClick);                             // press again on the same spot
+  const grabbed = app.run("editingXSStation"), n2 = app.run("bedXSections")[0].points.length;
+  release();
+  check(n1 === 1 && n2 === 1 && grabbed && grabbed.pointIdx === 0, "a cross-section point can be grabbed where it is drawn",
+        `points after first click ${n1}, after pressing on it again ${n2}, grabbed: ${!!grabbed}`);
+
+  app.run("toggleBedMode()");
+  app.setBedPoints(savedBed); globalThis.__xs = savedXS; app.run("bedXSections = globalThis.__xs; activeXSection = -1"); app.rebuildUserBedGrid();
+  app.setPaused(false);
 }
 
 // ---------------------------------------------------------------- 6. Space toggles pause exactly once

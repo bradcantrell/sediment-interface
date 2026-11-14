@@ -308,6 +308,15 @@ function computeUserBedZ(x, y) {
 const XS_WINDOW = 160;
 const BED_CHART_H = 160;                 // height of the transect chart along the bottom
 function bedChartY() { return height - BED_CHART_H; }
+// The elevation range the bed editor works in, in bed units. The model sets it
+// (model.bed = { zMin, zMax, datumLabel }): a river bed is drawn up from its floor, 0 to 160;
+// a coast needs both sides of still water. These three functions are the single mapping
+// between elevation and the transect chart, used by drawing, hit-testing and editing alike.
+function bedZMin() { return (model && model.bed && model.bed.zMin != null) ? model.bed.zMin : 0; }
+function bedZMax() { return (model && model.bed && model.bed.zMax != null) ? model.bed.zMax : 160; }
+function bedChartYOf(z) { return height - BED_CHART_H * ((z - bedZMin()) / (bedZMax() - bedZMin())); }
+function bedChartZOf(y) { return bedZMin() + ((height - y) / BED_CHART_H) * (bedZMax() - bedZMin()); }
+function clampBedZ(z) { return Math.max(bedZMin(), Math.min(bedZMax(), z)); }
 const XS_STRIP_W = 60;
 // The single source of truth for a profile strip's rectangle. Draw and hit-test both call this,
 // so a strip can never be visible somewhere it is not clickable.
@@ -329,7 +338,7 @@ function xsStripAt(mx, my) {
   }
   return best;
 }
-function xsWindowLo(baseZ) { return Math.max(-80, baseZ - XS_WINDOW / 2); }
+function xsWindowLo(baseZ) { return Math.max(bedZMin() - XS_WINDOW / 2, baseZ - XS_WINDOW / 2); }
 function xsAbsToVx(sx, w, absZ, baseZ) {
   let lo = xsWindowLo(baseZ);
   return sx + w - ((absZ - lo) / XS_WINDOW) * w;
@@ -965,29 +974,36 @@ function drawBedProfile() {
 
   noStroke(); fill(10,12,22,200); rect(0,stripY,width,stripH);
   stroke(40,40,55,60); strokeWeight(0.5);
-  for (let gz=20; gz<bedMaxZ; gz+=20) { let gy=stripY+stripH-(gz/bedMaxZ)*stripH; line(0,gy,width,gy); noStroke(); fill(255,255,255,30); textAlign(RIGHT,CENTER); textSize(9); text(gz,22,gy); }
+  let zLo=bedZMin(), zHi=bedZMax();
+  for (let gz=Math.floor(zLo/20)*20+20; gz<zHi; gz+=20) { let gy=bedChartYOf(gz); line(0,gy,width,gy); noStroke(); fill(255,255,255,30); textAlign(RIGHT,CENTER); textSize(9); text(gz,22,gy); }
+  // With a range that goes below zero, mark zero: it is the datum the model measures from.
+  if (zLo < 0) {
+    stroke(90,170,255,150); strokeWeight(1); line(0,bedChartYOf(0),width,bedChartYOf(0));
+    if (model.bed && model.bed.datumLabel) { noStroke(); fill(120,190,255,170); textAlign(LEFT,BOTTOM); textSize(9); text(model.bed.datumLabel,30,bedChartYOf(0)-2); }
+    stroke(40,40,55,60); strokeWeight(0.5);
+  }
   stroke(60,60,80,100); strokeWeight(1); line(0,stripY,width,stripY);
   noStroke(); fill(255,255,255,50); textAlign(LEFT,TOP); textSize(10); text('bed profile (z↑)',8,stripY+4);
 
   if (bedPoints.length >= 2) {
     fill(30,28,45,120); noStroke(); beginShape();
-    for (let pt of bedPoints) { let sy=stripY+stripH-(pt.z/bedMaxZ)*stripH; vertex(pt.x,sy); }
+    for (let pt of bedPoints) { let sy=bedChartYOf(pt.z); vertex(pt.x,sy); }
     vertex(bedPoints[bedPoints.length-1].x, stripY+stripH); vertex(bedPoints[0].x, stripY+stripH); endShape(CLOSE);
     stroke(255,180,60,200); strokeWeight(2); noFill(); beginShape();
-    for (let pt of bedPoints) { let sy=stripY+stripH-(pt.z/bedMaxZ)*stripH; vertex(pt.x,sy); }
+    for (let pt of bedPoints) { let sy=bedChartYOf(pt.z); vertex(pt.x,sy); }
     endShape();
-    for (let pt of bedPoints) { let sy=stripY+stripH-(pt.z/bedMaxZ)*stripH; fill(255,180,60,200); noStroke(); ellipse(pt.x,sy,6,6); }
+    for (let pt of bedPoints) { let sy=bedChartYOf(pt.z); fill(255,180,60,200); noStroke(); ellipse(pt.x,sy,6,6); }
     stroke(255,180,60,30); strokeWeight(1);
     for (let zLevel=20; zLevel<=bedMaxZ; zLevel+=20) { beginShape(); for (let pt of bedPoints) { if(pt.z>=zLevel) vertex(pt.x,0); else { endShape(); beginShape(); } } endShape(); }
   }
 
   if (bedMode && mouseX>=0 && mouseX<=width && mouseY>=stripY) {
-    let mz=(stripY+stripH-mouseY)/stripH*bedMaxZ; mz=max(0,min(bedMaxZ*2,mz));
-    noStroke(); fill(255,200,100,150); ellipse(mouseX, stripY+stripH-(mz/bedMaxZ)*stripH, 8,8);
+    let mz=clampBedZ(bedChartZOf(mouseY));
+    noStroke(); fill(255,200,100,150); ellipse(mouseX, bedChartYOf(mz), 8,8);
     if (bedPoints.length>0) {
       let last=bedPoints[bedPoints.length-1];
-      let lastSY=stripY+stripH-(last.z/bedMaxZ)*stripH;
-      stroke(255,200,100,60); strokeWeight(1); line(last.x,lastSY, mouseX, stripY+stripH-(mz/bedMaxZ)*stripH);
+      let lastSY=bedChartYOf(last.z);
+      stroke(255,200,100,60); strokeWeight(1); line(last.x,lastSY, mouseX, bedChartYOf(mz));
     }
   }
 
@@ -1268,7 +1284,7 @@ function setup() {
   }
   document.getElementById('toggle-grid').addEventListener('click',function(){showGrid=!showGrid;updateToggles();});
   document.getElementById('toggle-flow').addEventListener('click',function(){showFlow=!showFlow;updateToggles();});
-  document.getElementById('toggle-bed').addEventListener('click',function(){bedMode=!bedMode;if(bedMode){paused=true;refreshBedGeometry();}else paused=false;updateToggles();this.blur();});
+  document.getElementById('toggle-bed').addEventListener('click',function(){toggleBedMode();updateToggles();this.blur();});
   // Space toggles the run from a window-level listener rather than relying on p5's keyPressed,
   // which does not fire reliably once focus has been moved to a control. preventDefault stops the
   // page scrolling, and the target guard leaves real form controls alone.
@@ -1556,11 +1572,10 @@ function mousePressed(event) {
 
     if (mouseY >= stripY) {
       for (let i=0;i<bedPoints.length;i++) {
-        let sx=bedPoints[i].x, sy=stripY+stripH-(bedPoints[i].z/bedMaxZ)*stripH;
+        let sx=bedPoints[i].x, sy=bedChartYOf(bedPoints[i].z);
         if (dist(mouseX,mouseY,sx,sy)<10) { editingLongPt=i; return; }
       }
-      let z=(stripY+stripH-mouseY)/stripH*bedMaxZ;
-      bedPoints.push({x:mouseX,z:max(0,z)}); bedPoints.sort((a,b)=>a.x-b.x);
+      bedPoints.push({x:mouseX,z:clampBedZ(bedChartZOf(mouseY))}); bedPoints.sort((a,b)=>a.x-b.x);
       updateBedBuffer(); updateBedThumb(); return;
     }
 
@@ -1571,7 +1586,10 @@ function mousePressed(event) {
       let xsData=bedXSections.find(xs=>xs.x===pt.x);
       if (xsData&&xsData.points.length>0) {
         for (let pi=0;pi<xsData.points.length;pi++) {
-          let rp=xsData.points[pi], absZ=pt.z+rp.z, vy=rp.y/height*stripY, vx=sx+xStripW-(absZ/bedMaxZ)*xStripW;
+          // Where drawBedProfile() draws it: the same mapping and the same clamp to the strip.
+          // This used the old fixed 0..160 mapping, so a profile point could not be grabbed
+          // where it was shown, and a click on it added a second point instead.
+          let rp=xsData.points[pi], absZ=pt.z+rp.z, vy=rp.y/height*stripY, vx=constrain(xsAbsToVx(sx,xStripW,absZ,pt.z),sx,sx+xStripW);
           if (dist(mouseX,mouseY,vx,vy)<10) { editingXSStation={stationIdx:closestIdx,pointIdx:pi}; return; }
         }
       }
@@ -1580,7 +1598,7 @@ function mousePressed(event) {
         // must be able to cut BELOW it. Clamping to >= 0 let a section only ever add height,
         // which left every profile floating above the transect and raised the whole bed above
         // the elevation that was drawn. The transect is the baseline, not a floor.
-        let y=mouseY/stripY*height, absZ=Math.max(0, xsVxToAbs(mouseX,sx,xStripW,pt.z)), z=absZ-pt.z;
+        let y=mouseY/stripY*height, absZ=Math.max(bedZMin(), xsVxToAbs(mouseX,sx,xStripW,pt.z)), z=absZ-pt.z;
         let xsIdx=bedXSections.findIndex(xs=>xs.x===pt.x);
         if (xsIdx<0) { bedXSections.push({x:pt.x,points:[]}); xsIdx=bedXSections.length-1; }
         bedXSections[xsIdx].points.push({y:constrain(y,0,height),z}); bedXSections[xsIdx].points.sort((a,b)=>a.y-b.y);
@@ -1620,7 +1638,7 @@ function mouseDragged(event) {
   if (bedMode) {
     let stripH=160,stripY=height-stripH,bedMaxZ=160;
     if (editingLongPt>=0&&editingLongPt<bedPoints.length) {
-      let z=(stripY+stripH-mouseY)/stripH*bedMaxZ; bedPoints[editingLongPt].z=max(0,z);
+      bedPoints[editingLongPt].z=clampBedZ(bedChartZOf(mouseY));
       updateBedBuffer(); updateBedThumb(); return;
     }
     if (editingXSStation) {
@@ -1628,7 +1646,7 @@ function mouseDragged(event) {
       let xsData=bedXSections.find(xs=>xs.x===bedPoints[si].x);
       if (xsData&&pi<xsData.points.length) {
         let xStripW=60, sx=constrain(bedPoints[si].x-xStripW/2, 0, width-xStripW);
-        let absZ=Math.max(0, xsVxToAbs(mouseX,sx,xStripW,bedPoints[si].z));
+        let absZ=Math.max(bedZMin(), xsVxToAbs(mouseX,sx,xStripW,bedPoints[si].z));
         xsData.points[pi].z=absZ-bedPoints[si].z;
         xsData.points[pi].y=constrain(mouseY/stripY*height,0,height);
         updateBedBuffer(); updateBedThumb();
@@ -1650,6 +1668,15 @@ function mouseWheel(event) {
   ghostRotation=(ghostRotation+delta)%360; if(ghostRotation<0)ghostRotation+=360;
   if (selectedIdx>=0) { obstacles[selectedIdx].rotation=ghostRotation; solidMaskDirty = true; }
   return false;
+}
+
+// Entering bed mode pauses the simulation; leaving it restores whatever it was. One function
+// for the button, the M key and Escape, which used to disagree: the button always resumed on
+// leaving, and M and Escape left the run paused even if it had been running.
+let bedWasPaused = true;
+function toggleBedMode() {
+  if (bedMode) { bedMode = false; paused = bedWasPaused; }
+  else { bedWasPaused = paused; bedMode = true; paused = true; refreshBedGeometry(); }
 }
 
 function keyPressed() {
@@ -1687,8 +1714,8 @@ function keyPressed() {
       return;
     }
   }
-  else if (key==='Escape') { selectedIdx=-1; dragging=false; resizeDrag=null; polyVertexDrag=null; polyPoints=[]; if(bedMode)bedMode=false; }
-  else if (key==='m'||key==='M') { bedMode=!bedMode; if(bedMode){paused=true; refreshBedGeometry();} }
+  else if (key==='Escape') { selectedIdx=-1; dragging=false; resizeDrag=null; polyVertexDrag=null; polyPoints=[]; if(bedMode)toggleBedMode(); }
+  else if (key==='m'||key==='M') { toggleBedMode(); }
   else if (key==='s'||key==='S') { saveCanvas('sediment-'+floor(simTime),'png'); }
   else backendKey(key);
   return false;
@@ -1963,6 +1990,7 @@ function updateTimelineVisibility() {
 //     drawUnderlay() {},              // drawn over the bed, under the particles
 //     updateToggles() {},             // refresh the model's toggle buttons
 //     scene(st) {},                   // add the model's part to sceneState()
+//     bed: { zMin, zMax, datumLabel },   // elevation range of the bed editor (default 0..160)
 //   });
 //
 // The contract between the two is the flow grid: NX x NY cells plus a one-cell border,

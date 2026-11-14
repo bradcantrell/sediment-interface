@@ -42,6 +42,15 @@ Rules:
   into `#model-controls`. That wrapper is `display:contents` on purpose: the sidebar is a
   flex column with a gap, and a plain wrapper packs the rows tighter. The harness cannot
   see that; a browser can.
+- **The bed editor's elevation range belongs to the model** (`model.bed = { zMin, zMax,
+  datumLabel }`, default 0 to 160). `bedChartYOf()`, `bedChartZOf()` and `clampBedZ()` are
+  the only mapping between elevation and the transect chart; drawing, hit-testing and
+  editing all go through them. The river does not set a range, so its bed is still drawn up
+  from the floor. A range below zero is honoured by the editor and the 3D view; the bed
+  colour ramp and the river's sediment rules still assume zero is the floor, which is
+  stage 3 work (coastal brings its own bed rendering).
+- **`toggleBedMode()` is the only way in and out of bed mode** (button, `M`, Escape). It
+  pauses on entry and restores the previous state on exit.
 - A different kind of water (waves, tide) is a different `model.js` in its own repo, on the
   same `index.html`. The coastal interface is the next one to move onto this.
 
@@ -74,10 +83,13 @@ and the simulation was dead along with every listener attached after the throw.
 
 The harness loads the page the way a browser does (inline script, then `model.js`, then
 `site.js`, one scope), mocks p5 and the DOM, and asserts on model state rather than pixels.
-32 checks:
+40 checks:
 
-- **Interface** (`dev/headless_harness.js`, 18): `setup()` completes, the draw loop advances
-  time, sediment moves, a transect edits the bed, every visible strip is clickable, Space
+- **Interface** (`dev/headless_harness.js`, 26): `setup()` completes, the draw loop advances
+  time, sediment moves, a transect edits the bed, every visible strip is clickable, the bed
+  editor works through the real mouse handlers (bed mode restores the pause state, a click
+  lands at the elevation under the pointer, drags stop at the range, a signed range goes
+  below zero, a cross-section point can be grabbed where it is drawn), Space
   unpauses exactly once, the model extension point works (stepped once per running frame,
   controls mounted, told when the bed changes, its tool can take the pointer, asked for the
   scene), the site extension point works (a backend mounts once, gets its frame and keys,
