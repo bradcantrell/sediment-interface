@@ -120,6 +120,7 @@
       sim-time: <span class="hv" id="simtime">0.0</span>s &nbsp; mobile: <span class="hv" id="mobile">0</span><br>
       deposited: <span class="hv" id="deposited">0</span> &nbsp; obstacles: <span class="hv" id="obstacles">0</span><br>
       shape: <span class="hv" id="shape">rect</span> &phi;: <span class="hv" id="rot">0</span>&deg;<br>
+      <span id="model-stats" style="display:contents"></span>
       <span class="hw" id="paused"></span>
     </div>
     <div id="site-slot"></div>
@@ -211,7 +212,7 @@ let polyPoints = [];        // in-progress freeform polygon vertices
 // Timeline: choreograph obstacle existence through a looping time range.
 let timelineEnabled = false;
 let timelineDuration = 120;   // loop length in seconds (30..600)
-const DEFAULT_OBJ_DUR = 10;   // default lifetime of a newly placed obstacle
+let DEFAULT_OBJ_DUR = 10;     // default lifetime of a newly placed obstacle (a model may set it, see model.timeline)
 let timelinePingPong = false; // false = loop forward, true = bounce back and forth
 let tlDrag = null;            // active timeline drag {mode, obstacleIdx, clipIdx, grabX, ...}
 let selectedClip = -1;        // clip index within obstacles[selectedIdx].clips, -1 = none
@@ -259,6 +260,8 @@ let fastColor = '#e8d5b8';
 let flowScale = 25;
 let flowDensity = 8;
 let flowOpacity = 55;
+// What the render reset button goes back to. A model may change these three (model.render).
+const RENDER_DEFAULTS = { slowColor: '#5c4a3a', fastColor: '#e8d5b8', flowOpacity: 55 };
 let colorThresh = 0.5;
 let particleCount = 3000;
 let depoSize = 6;
@@ -288,7 +291,7 @@ function getStationZ(station, y) {
 }
 
 function computeUserBedZ(x, y) {
-  if (bedPoints.length < 2) return 0;
+  if (bedPoints.length < 2) return (model && model.defaultBedZ) ? model.defaultBedZ(x, y) : 0;
   if (x <= bedPoints[0].x) return getStationZ(bedPoints[0], y);
   if (x >= bedPoints[bedPoints.length - 1].x) return getStationZ(bedPoints[bedPoints.length - 1], y);
   for (let k = 0; k < bedPoints.length - 1; k++) {
@@ -349,7 +352,7 @@ function xsVxToAbs(mouseXPos, sx, w, baseZ) {
 }
 
 function userBedZ(x, y) {
-  if (!userBedGrid || bedPoints.length < 2) return 0;
+  if (!userBedGrid || bedPoints.length < 2) return (model && model.defaultBedZ) ? model.defaultBedZ(x, y) : 0;
   let fx = x / DEPO_CELL - 0.5, fy = y / DEPO_CELL - 0.5;
   let i = Math.floor(fx), j = Math.floor(fy);
   if (i < 0 || j < 0 || i >= GW - 1 || j >= GH - 1) return 0;
@@ -373,7 +376,10 @@ function rebuildUserBedGrid() {
 }
 
 // Combined bed height = user-drawn bed + accumulated deposition (aggradation).
-function bedZ(x, y) { return userBedZ(x, y) + depoZ(x, y); }
+function bedZ(x, y) {
+  let z = userBedZ(x, y) + depoZ(x, y);
+  return (model && model.bedTotal) ? model.bedTotal(z, x, y) : z;   // a model may add layers of its own
+}
 
 function depoZ(x, y) {
   if (!depoGrid) return 0;
@@ -407,6 +413,7 @@ function buildSolidMask() {
   solid.fill(0);
   for (let ob of obstacles) {
     if (!isObstacleActive(ob)) continue;
+    if (model && model.isSolid && !model.isSolid(ob)) continue;   // an object the flow passes through (sand, not concrete)
     if (ob.type === 'poly') {
       let a = ob.rotation * PI / 180, cosA = cos(a), sinA = sin(a);
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -478,8 +485,9 @@ function getVelocityAt(px, py) {
 
 function timelineLoopTime() {
   let T = timelineDuration;
-  if (!timelinePingPong) return ((simTime % T) + T) % T;
-  let m = ((simTime % (2 * T)) + 2 * T) % (2 * T);   // position in a full back-and-forth cycle
+  let t = (model && model.clock) ? model.clock() : simTime;   // a model may run the timeline on its own time (model years)
+  if (!timelinePingPong) return ((t % T) + T) % T;
+  let m = ((t % (2 * T)) + 2 * T) % (2 * T);   // position in a full back-and-forth cycle
   return m <= T ? m : 2 * T - m;                     // bounce at the ends
 }
 
@@ -555,6 +563,8 @@ function updateParticles() {
       let bedLeft = bedZ(max(0, p.x - 4), p.y), bedRight = bedZ(min(width, p.x + 4), p.y);
       let gradY = (bedAbove - bedBelow) / 8;   // + = downhill toward +y
       let gradX = (bedLeft - bedRight) / 8;    // + = downhill toward +x
+      if (R.slope) R.slope(p, gradX, gradY, bedHere, vel);   // the model's own response to bed slope
+      else {
       p.vy += gradY * cellH * 2.0;
       // Bed slope has to act on transport. At the old gain of 0.6 a typical drawn slope gave
       // ~0.4 px/frame against a ~8 px/frame flow, a 20x deficit: the bed could not visibly
@@ -564,6 +574,7 @@ function updateParticles() {
       let flowSpeed = Math.sqrt(vel.vx * vel.vx + vel.vy * vel.vy);
       let slopeCap = Math.max(4, flowSpeed * 0.6);
       p.vx += Math.max(-slopeCap, Math.min(slopeCap, gradX * cellW * 6.0));
+      }
     }
 
     // FLOW: ×4 rescales the Stam field velocity (u*cellW) to a stable visual drift.
@@ -649,8 +660,12 @@ function updateParticles() {
       // it made deposition feed its own growth: the first particles to settle raised bedHere,
       // which raised the settle chance, which deposited more. That runaway is what grew the
       // ridge where sediment first touched down instead of letting it travel the reach.
-      let drawnZ = Math.max(0, userBedZ(p.x, p.y));
-      let bedDep = settleProb * BED_SETTLE_ON_BED * (1.0 + (drawnZ / 160) * 1.5);
+      let bedDep;
+      if (R.bedSettleChance) bedDep = R.bedSettleChance(bedHere, settleProb, p);
+      else {
+        let drawnZ = Math.max(0, userBedZ(p.x, p.y));
+        bedDep = settleProb * BED_SETTLE_ON_BED * (1.0 + (drawnZ / 160) * 1.5);
+      }
       if (random() < bedDep) {
         settleParticle(p, bedHere);
         particles.splice(i, 1);
@@ -661,8 +676,12 @@ function updateParticles() {
     // Speed-graded settling: the slower a particle, the more readily it deposits.
     // A hard threshold made settling all-or-nothing; now slowness scales the chance
     // (a particle at rest settles ~9x faster than one just under the threshold).
-    let drawnZForBoost = Math.max(0, userBedZ(p.x, p.y));   // drawn bed only, see above
-    let bedSettleBoost = drawnZForBoost > 0 ? 1.0 + (drawnZForBoost/160)*2.0 : 1.0;
+    let bedSettleBoost;
+    if (R.settleBoost) bedSettleBoost = R.settleBoost(bedHere, p);
+    else {
+      let drawnZForBoost = Math.max(0, userBedZ(p.x, p.y));   // drawn bed only, see above
+      bedSettleBoost = drawnZForBoost > 0 ? 1.0 + (drawnZForBoost/160)*2.0 : 1.0;
+    }
     let slow = speed < settleThresh ? 1.0 - speed / settleThresh : 0.0;
     if (p.x > MIN_TRAVEL_X && age > MIN_PARTICLE_AGE && speed < settleThresh && random() < settleProb * bedSettleBoost * (1.0 + slow * 8.0)) {
       settleParticle(p, bedHere);
@@ -910,6 +929,9 @@ function drawParticles() {
 
   function updateBedBuffer() {
   rebuildUserBedGrid();
+  // A model with layers of its own to show (the coast: where the bed has moved) draws the
+  // whole bed surface itself.
+  if (model.renderBed) { bedSurface.clear(); model.renderBed(bedSurface); return; }
   bedSurface.clear();
   let step = 8;
   // Ramp over the height actually present, not a fixed 160 units. With a fixed span a build-up
@@ -1183,6 +1205,7 @@ function updateHUD() {
   document.getElementById('rot').textContent=fmt(ghostRotation%360);
   document.getElementById('paused').textContent=paused?(bedMode?'🖉 BED MODE ('+bedPoints.length+' pts)':'⏸ PAUSED'):'';
   document.getElementById('help').style.opacity=showHelp?'1':'0';
+  if (model.hud) model.hud();
 }
 
 // ─────────────────────────────────────────────
@@ -1214,6 +1237,7 @@ function setup() {
   GW = Math.ceil(width / DEPO_CELL) + 1;
   GH = Math.ceil(height / DEPO_CELL) + 1;
   depoGrid = new Float32Array(GW * GH); userBedGrid = new Float32Array(GW * GH);
+  if (model.bedGridsReady) model.bedGridsReady();   // GW and GH exist: a model allocates its own bed layers
   updateBedBuffer();
 
   bedThumb = document.getElementById('bed-thumb').getContext('2d');
@@ -1309,19 +1333,19 @@ function setup() {
 
   // Reset buttons
   document.getElementById('reset-render').addEventListener('click',function(){
-    trailFade=7;particleSize=2;slowColor='#5c4a3a';fastColor='#e8d5b8';
-    colorThresh=0.5;flowScale=25;flowDensity=8;flowOpacity=55;
+    trailFade=7;particleSize=2;slowColor=RENDER_DEFAULTS.slowColor;fastColor=RENDER_DEFAULTS.fastColor;
+    colorThresh=0.5;flowScale=25;flowDensity=8;flowOpacity=RENDER_DEFAULTS.flowOpacity;
     depoSize=6;depoRecentColor='#ffcc55';depoOldestColor='#6b4f3a';
     document.getElementById('depo-size').value=6;document.getElementById('depo-size-val').textContent='6';
     document.getElementById('depo-recent').value='#ffcc55';document.getElementById('depo-oldest').value='#6b4f3a';
     redrawDepoBuffer();
     document.getElementById('trail-fade').value=7;document.getElementById('trail-fade-val').textContent='7';
     document.getElementById('particle-size').value=2;document.getElementById('particle-size-val').textContent='2';
-    document.getElementById('slow-color').value='#5c4a3a';document.getElementById('fast-color').value='#e8d5b8';
+    document.getElementById('slow-color').value=RENDER_DEFAULTS.slowColor;document.getElementById('fast-color').value=RENDER_DEFAULTS.fastColor;
     document.getElementById('color-thresh').value=0.5;document.getElementById('color-thresh-val').textContent='0.50';
     document.getElementById('flow-scale').value=25;document.getElementById('flow-scale-val').textContent='25';
     document.getElementById('flow-dens').value=8;document.getElementById('flow-dens-val').textContent='8';
-    document.getElementById('flow-opacity').value=55;document.getElementById('flow-opacity-val').textContent='55';
+    document.getElementById('flow-opacity').value=RENDER_DEFAULTS.flowOpacity;document.getElementById('flow-opacity-val').textContent=String(RENDER_DEFAULTS.flowOpacity);
   });
 
   addObstacle(width*0.2, height*0.35, 'circle', 0);
@@ -1330,6 +1354,7 @@ function setup() {
   // Default obstacles occupy the full timeline (addObstacle already sets
   // clips: [{start:0, dur:Infinity}], which is 'always active' regardless of loop length).
   ghostRotation = 30;
+  if (model.sceneReady) model.sceneReady();   // the default obstacles exist: a model may arrange them
 
   // Timeline controls
   document.getElementById('toggle-timeline').addEventListener('click', function(){ timelineEnabled=!timelineEnabled; updateTimelineVisibility(); });
@@ -1341,7 +1366,10 @@ function setup() {
   window.addEventListener('mouseup', timelineMouseUp);
   updateTimelineVisibility();
 
-  for (let k=0; k<80; k++) { simTime+=DT; buildSolidMask(); model.step(); }
+  // Let the flow develop before the first frame. A model whose step() does more than flow
+  // (the coast moves the bed) supplies its own.
+  if (model.spinUp) model.spinUp();
+  else for (let k=0; k<80; k++) { simTime+=DT; buildSolidMask(); model.step(); }
   initParticles();
   mountBackends();
 }
@@ -1378,7 +1406,8 @@ function draw() {
   // Keep the bed gradient current while sediment builds up: without this the ramp was only
   // rebuilt on bed edits, so accumulation showed as dots but never as topography. The buffer
   // resamples ~20k points, so throttle it.
-  if (frameCount % 20 === 0 && deposited.length > 0) updateBedBuffer();
+  // (A model that draws the bed surface itself refreshes it on its own cadence in step().)
+  if (!model.renderBed && frameCount % 20 === 0 && deposited.length > 0) updateBedBuffer();
   // Terrain mesh refreshes on a slower cadence than the particles.
   if (frameCount % 12 === 0) updateBedThumb();
   drawSpotElevations();
@@ -1549,6 +1578,11 @@ function hitTestObstacle(mx, my) {
 }
 
 function addObstacle(x, y, type, rot) {
+  // A model can have object kinds of its own (the coast: a nourishment). It builds them.
+  if (model && model.makeObstacle) {
+    const made = model.makeObstacle(type, x, y, rot);
+    if (made) { obstacles.push(made); selectedIdx = obstacles.length - 1; solidMaskDirty = true; return; }
+  }
   solidMaskDirty = true;
   obstacles.push({ type, x, y, w: ghostSize, h: ghostSize, rotation: rot||0, clips: [{ start: 0, dur: Infinity }] });
 }
@@ -1717,6 +1751,7 @@ function keyPressed() {
   else if (key==='Escape') { selectedIdx=-1; dragging=false; resizeDrag=null; polyVertexDrag=null; polyPoints=[]; if(bedMode)toggleBedMode(); }
   else if (key==='m'||key==='M') { toggleBedMode(); }
   else if (key==='s'||key==='S') { saveCanvas('sediment-'+floor(simTime),'png'); }
+  else if (model.key && model.key(key)) { /* the model took it */ }
   else backendKey(key);
   return false;
 }
@@ -1725,6 +1760,7 @@ function keyPressed() {
 // TIMELINE
 // ─────────────────────────────────────────────
 function fmtDur(s) {
+  if (model && model.formatDuration) return model.formatDuration(s);
   if (s >= 60) { let m = Math.floor(s/60), r = Math.round(s%60); return r ? m + 'm' + r + 's' : m + 'm'; }
   return Math.round(s) + 's';
 }
@@ -1991,6 +2027,23 @@ function updateTimelineVisibility() {
 //     updateToggles() {},             // refresh the model's toggle buttons
 //     scene(st) {},                   // add the model's part to sceneState()
 //     bed: { zMin, zMax, datumLabel },   // elevation range of the bed editor (default 0..160)
+//     defaultBedZ(x, y) {},           // the bed when nothing is drawn (default: flat, 0)
+//     bedTotal(z, x, y) {},           // z is drawn bed + deposit; return it with the model's
+//                                     // own layers added
+//     bedGridsReady() {},             // GW and GH exist; allocate layers on the bed grid
+//     renderBed(g) {},                // draw the whole bed surface into g, replacing the default
+//     isSolid(ob) {},                 // false for an object the flow passes through
+//     makeObstacle(type, x, y, rot) {},   // build an object of the model's own kind, or null
+//     key(k) {},                      // a key the interface does not use; return true if taken
+//     help: '4 nourish',              // appended to the key list
+//     clock() {}, formatDuration(t) {},   // the timeline's time and how to print it
+//     timeline: { duration, objectDuration, min, max, step },
+//     render: { slowColor, fastColor, flowOpacity },   // render defaults
+//     hud() {},                       // refresh the model's readouts, every frame
+//     sceneReady() {}, spinUp() {},   // arrange the default obstacles; develop the flow
+//     controls.stats                  // markup for an extra line in the stats block
+//     rules.slope(p, gradX, gradY, bedHere, vel), rules.bedSettleChance(bedHere, settleProb, p),
+//     rules.settleBoost(bedHere, p)   // replace the default sediment responses to the bed
 //   });
 //
 // The contract between the two is the flow grid: NX x NY cells plus a one-cell border,
@@ -2011,6 +2064,25 @@ function mountModel() {
   const c = model.controls || {};
   if (c.html) document.getElementById('model-controls').innerHTML = c.html;
   if (c.toggles) document.getElementById('model-toggles').innerHTML = c.toggles;
+  if (c.stats) document.getElementById('model-stats').innerHTML = c.stats;
+  if (model.help) { const h = document.getElementById('help-site'); if (h) h.innerHTML += ' &middot; ' + model.help; }
+  // Render defaults: the colours and flow opacity a model looks right in.
+  if (model.render) {
+    Object.assign(RENDER_DEFAULTS, model.render);
+    slowColor = RENDER_DEFAULTS.slowColor; fastColor = RENDER_DEFAULTS.fastColor; flowOpacity = RENDER_DEFAULTS.flowOpacity;
+    document.getElementById('slow-color').value = slowColor; document.getElementById('fast-color').value = fastColor;
+    document.getElementById('flow-opacity').value = flowOpacity; document.getElementById('flow-opacity-val').textContent = String(flowOpacity);
+  }
+  // Timeline: the loop length, its slider range and the life of a new object, in whatever
+  // unit model.clock() counts.
+  if (model.timeline) {
+    const t = model.timeline, sl = document.getElementById('timeline-dur');
+    if (t.duration != null) timelineDuration = t.duration;
+    if (t.objectDuration != null) DEFAULT_OBJ_DUR = t.objectDuration;
+    if (t.min != null) sl.min = t.min; if (t.max != null) sl.max = t.max; if (t.step != null) sl.step = t.step;
+    sl.value = timelineDuration;
+    document.getElementById('timeline-dur-val').textContent = fmtDur(timelineDuration);
+  }
   if (c.wire) c.wire();
 }
 

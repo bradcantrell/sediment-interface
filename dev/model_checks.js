@@ -11,6 +11,12 @@
 // paintFriction turned into a silent no-op the brush checks fail and the harness exits 1,
 // while node --check still passes.
 module.exports = function ({ app, S, check }) {
+  // ---------------------------------------------------------------- the scene carries the inflow
+  {
+    const sc = app.run("sceneState()");
+    check(sc.inflow === S().inflowVel && sc.inflow > 0, "the river adds its inflow to the scene", `inflow ${sc.inflow}`);
+  }
+
   // ---------------------------------------------------------------- transport runs downstream
   // Followed particle by particle. The mean x of the whole cloud is not a test once the run
   // is under way: particles that leave re-enter at the inflow, so it rises and falls.

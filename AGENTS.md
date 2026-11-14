@@ -51,8 +51,14 @@ Rules:
   stage 3 work (coastal brings its own bed rendering).
 - **`toggleBedMode()` is the only way in and out of bed mode** (button, `M`, Escape). It
   pauses on entry and restores the previous state on exit.
+- **The harness checks the interface under whatever model is loaded.** Its checks must not
+  assume the river (a 0 to 160 bed, an inflow, a direction of travel). Optional hooks are
+  tested by putting a known hook in, watching the interface use it, and putting the model's
+  own back (`withHook`), so they are covered even when the loaded model does not have them.
 - A different kind of water (waves, tide) is a different `model.js` in its own repo, on the
-  same `index.html`. The coastal interface is the next one to move onto this.
+  same `index.html`. The coastal interface (`coastal-sediment-interface`) runs on it: wave
+  field, bed change and model time in its `model.js`, the XBeach export in its `site.js`.
+  A change here must pass the coastal repo's harnesses too before that repo syncs.
 
 ## Other repos vendor these files
 
@@ -83,18 +89,19 @@ and the simulation was dead along with every listener attached after the throw.
 
 The harness loads the page the way a browser does (inline script, then `model.js`, then
 `site.js`, one scope), mocks p5 and the DOM, and asserts on model state rather than pixels.
-40 checks:
+54 checks:
 
-- **Interface** (`dev/headless_harness.js`, 26): `setup()` completes, the draw loop advances
+- **Interface** (`dev/headless_harness.js`, 39): `setup()` completes, the draw loop advances
   time, sediment moves, a transect edits the bed, every visible strip is clickable, the bed
   editor works through the real mouse handlers (bed mode restores the pause state, a click
   lands at the elevation under the pointer, drags stop at the range, a signed range goes
   below zero, a cross-section point can be grabbed where it is drawn), Space
   unpauses exactly once, the model extension point works (stepped once per running frame,
   controls mounted, told when the bed changes, its tool can take the pointer, asked for the
-  scene), the site extension point works (a backend mounts once, gets its frame and keys,
+  scene, and every optional hook is used: bed layers, default bed, non-solid objects, own
+  object kinds, keys, clock, bed rendering, readouts, sediment rules, setup hooks), the site extension point works (a backend mounts once, gets its frame and keys,
   `sceneState()` describes the scene), nothing goes non-finite.
-- **River model** (`dev/model_checks.js`, 12): sediment travels downstream, friction slows
+- **River model** (`dev/model_checks.js`, 13): the scene carries the inflow, sediment travels downstream, friction slows
   the field, the friction brush adds and subtracts, still water stays still, leftover motion
   stays bounded, and the bed is in the flow (see below).
 - **This site** (`dev/site_checks.js`, 2): the export backend mounts, and the real case

@@ -19,7 +19,10 @@
 //   6. Space unpauses exactly once  — no double-toggle between keyPressed and the window
 //   7. the model extension point works — the interface steps the model once per frame,
 //                                     mounts its controls, tells it when the bed changes,
-//                                     lets its tool take the pointer, asks it for the scene
+//                                     lets its tool take the pointer, asks it for the scene,
+//                                     and uses each optional hook (bed layers, default bed,
+//                                     non-solid objects, own object kinds, keys, clock,
+//                                     bed rendering, readouts, sediment rules, setup hooks)
 //   8. the model's own checks       — dev/model_checks.js, if there is one
 //   9. the site extension point works — a backend mounts once, runs every frame, gets its
 //                                     keys, and sceneState() describes the drawn scene
@@ -340,7 +343,7 @@ console.log(`defaults from markup: ${Object.keys(DEFAULTS).length} controls`);
 
 // Count what the interface asks of the model, by wrapping the registered model's hooks
 // before setup(). The model still does its work; the wrappers only watch.
-globalThis.__model = { step: 0, bedChanged: 0, scene: 0, pointer: 0, take: null };
+globalThis.__model = { step: 0, bedChanged: 0, scene: 0, pointer: 0, take: null, gridsReady: 0, sceneReady: 0, spinUp: 0, stepsAtSpinUp: -1, hud: 0, obstaclesAtSceneReady: -1, gwAtGridsReady: 0 };
 app.run(`(function () {
   const w = globalThis.__model;
   if (!model) return;
@@ -348,6 +351,12 @@ app.run(`(function () {
   const bc = model.bedChanged; model.bedChanged = function () { w.bedChanged++; if (bc) return bc.apply(model, arguments); };
   const sc = model.scene; model.scene = function () { w.scene++; if (sc) return sc.apply(model, arguments); };
   const pt = model.pointer; model.pointer = function () { w.pointer++; if (w.take !== null) return w.take; return pt ? pt.apply(model, arguments) : false; };
+  // Setup-time hooks. Watching one the model does not have is harmless, except spinUp, which
+  // replaces the default spin-up when present, so it is only wrapped if the model has it.
+  const gr = model.bedGridsReady; model.bedGridsReady = function () { w.gridsReady++; w.gwAtGridsReady = GW; if (gr) return gr.apply(model, arguments); };
+  const sr = model.sceneReady; model.sceneReady = function () { w.sceneReady++; w.obstaclesAtSceneReady = obstacles.length; if (sr) return sr.apply(model, arguments); };
+  const su = model.spinUp; if (su) model.spinUp = function () { w.spinUp++; return su.apply(model, arguments); };
+  const hd = model.hud; model.hud = function () { w.hud++; if (hd) return hd.apply(model, arguments); };
 })()`);
 
 // A probe backend, registered before setup() the way a site.js would be. It records what the
@@ -364,6 +373,7 @@ app.run(`registerBackend({
 // ---------------------------------------------------------------- 1. setup
 try {
   app.setup();
+  globalThis.__model.stepsAtSpinUp = globalThis.__model.step;
   check(true, "setup() completes without throwing", "clean");
 } catch (e) {
   check(false, "setup() completes without throwing", e.message);
@@ -447,12 +457,13 @@ try {
   fresh();
   press(w * 0.3, h - CH / 2); release();
   const zMid = S().bedPoints.length === 1 ? S().bedPoints[0].z : NaN;
-  check(Math.abs(zMid - 80) < 0.01, "a click in the transect chart lands at the elevation under the pointer", `half-way up a 0..160 chart gives z = ${zMid}`);
+  const rLo = app.run("bedZMin()"), rHi = app.run("bedZMax()");      // this model's range
+  check(Math.abs(zMid - (rLo + rHi) / 2) < 0.01, "a click in the transect chart lands at the elevation under the pointer", `half-way up a ${rLo}..${rHi} chart gives z = ${zMid}`);
 
   // Drag that point far above the chart: it stops at the top of the range.
   press(w * 0.3, h - CH / 2); drag(w * 0.3, h - CH - 300); release();
   const zTop = S().bedPoints[0].z;
-  check(zTop === 160, "a transect point dragged past the chart stops at the top of the range", `z = ${zTop}`);
+  check(zTop === rHi, "a transect point dragged past the chart stops at the top of the range", `z = ${zTop}`);
 
   // A model can widen the range to both sides of zero (a coast). Same chart, same mapping.
   const m = app.run("model"), savedRange = m.bed;
@@ -535,6 +546,98 @@ try {
 
   const k0 = w.scene; app.run("sceneState()");
   check(w.scene === k0 + 1, "sceneState() asks the model for its part", `${w.scene - k0} call(s)`);
+
+  // ---- setup-time hooks
+  check(w.gridsReady === 1 && w.gwAtGridsReady > 0, "the model is told once when the bed grids exist", `${w.gridsReady} call(s), GW ${w.gwAtGridsReady} at the time`);
+  check(w.sceneReady === 1 && w.obstaclesAtSceneReady === 3, "the model is handed the default scene once, after its obstacles exist", `${w.sceneReady} call(s), ${w.obstaclesAtSceneReady} obstacles at the time`);
+  check(m.spinUp ? (w.spinUp === 1) : (w.stepsAtSpinUp === 80),
+        "the flow is developed before the first frame, by the model's spin-up if it has one", m.spinUp ? `model spin-up ran ${w.spinUp} time(s)` : `${w.stepsAtSpinUp} default steps`);
+  const h0 = w.hud; for (let i = 0; i < 5; i++) app.draw();
+  check(w.hud - h0 === 5, "the model's readouts are refreshed every frame", `${w.hud - h0} calls in 5 frames`);
+  {
+    const el = (id) => app.run(`document.getElementById('${id}')`), c2 = m.controls || {};
+    const okStats = !c2.stats || el("model-stats").innerHTML === c2.stats;
+    const okHelp = !m.help || el("help-site").innerHTML.includes(m.help);
+    const okRender = !m.render || (app.run("slowColor") === m.render.slowColor && app.run("flowOpacity") === m.render.flowOpacity && el("slow-color").value === m.render.slowColor);
+    const okTl = !m.timeline || (app.run("timelineDuration") === m.timeline.duration && app.run("DEFAULT_OBJ_DUR") === m.timeline.objectDuration && String(el("timeline-dur").max) === String(m.timeline.max));
+    check(okStats && okHelp && okRender && okTl, "what the model declares (stats line, help, render defaults, timeline) is applied at setup",
+          `stats ${okStats}, help ${okHelp}, render ${okRender}, timeline ${okTl}` + (!c2.stats && !m.help && !m.render && !m.timeline ? " (this model declares none)" : ""));
+  }
+
+  // ---- hooks a model may or may not have: put a known one in, see the interface use it,
+  // and put the model's own back.
+  const withHook = (owner, name, fn, body) => { const had = Object.prototype.hasOwnProperty.call(owner, name), old = owner[name]; owner[name] = fn; try { return body(); } finally { if (had) owner[name] = old; else delete owner[name]; } };
+  const W2 = S().width, H2 = S().height;
+
+  const base = app.bedZ(W2 * 0.5, H2 * 0.5);
+  const lifted = withHook(m, "bedTotal", (z) => z + 7, () => app.bedZ(W2 * 0.5, H2 * 0.5));
+  const plain = withHook(m, "bedTotal", undefined, () => app.bedZ(W2 * 0.5, H2 * 0.5));
+  check(Math.abs(lifted - plain - 7) < 1e-9 && isFinite(base), "a model's bed layers are added to the bed", `bed ${plain.toFixed(2)} -> ${lifted.toFixed(2)} with a layer of 7`);
+
+  {
+    const savedBed = S().bedPoints, savedXS = app.run("bedXSections");
+    app.setBedPoints([]);
+    const d = withHook(m, "defaultBedZ", () => -5, () => [app.userBedZ(W2 * 0.3, H2 * 0.4), app.run("computeUserBedZ")(W2 * 0.3, H2 * 0.4)]);
+    const none = withHook(m, "defaultBedZ", undefined, () => app.userBedZ(W2 * 0.3, H2 * 0.4));
+    check(d[0] === -5 && d[1] === -5 && none === 0, "with nothing drawn the bed is the model's default, or flat", `default ${d[0]}, without one ${none}`);
+    app.setBedPoints(savedBed); globalThis.__xs = savedXS; app.run("bedXSections = globalThis.__xs"); app.rebuildUserBedGrid();
+  }
+
+  {
+    const saved = S().obstacles, ob = { type: "rect", x: W2 * 0.5, y: H2 * 0.5, w: 120, h: 120, size: 120, rotation: 0, clips: [{ start: 0, dur: Infinity }] };
+    const count = () => { app.run("buildSolidMask()"); let n = 0; for (const x of S().solid) n += x; return n; };
+    app.setObstacles([ob]);
+    const solidN = withHook(m, "isSolid", () => true, count), softN = withHook(m, "isSolid", () => false, count);
+    check(solidN > 50 && softN === 0, "an object the model calls not solid is left out of the flow's obstacle mask", `${solidN} cells when solid, ${softN} when not`);
+
+    app.setObstacles([]);
+    const made = withHook(m, "makeObstacle", (type, x, y) => type === "__kind" ? { type: "rect", kind: "__kind", x, y, w: 10, h: 10, rotation: 0, clips: [{ start: 0, dur: Infinity }] } : null, () => {
+      app.run("addObstacle")(100, 100, "__kind", 0); app.run("addObstacle")(200, 200, "rect", 0);
+      return S().obstacles.map(o => (o.kind || "plain") + ":" + o.type + ":" + o.w).join(", ");
+    });
+    const gs = app.run("ghostSize");
+    check(made === `__kind:rect:10, plain:rect:${gs}`, "a model builds objects of its own kind, and the rest are built as usual", made);
+    app.setObstacles(saved); app.run("solidMaskDirty = true; selectedIdx = -1");
+  }
+
+  {
+    let got = 0;
+    const flow0 = app.run("showFlow");
+    withHook(m, "key", (k) => { if (k === "9") { got++; return true; } return false; }, () => { globalThis.key = "9"; app.keyPressed(); globalThis.key = "f"; app.keyPressed(); });
+    check(got === 1 && app.run("showFlow") !== flow0, "a model receives its keys, and the interface keeps its own", `model key hits ${got}`);
+    globalThis.key = "f"; app.keyPressed();
+  }
+
+  {
+    const T = app.run("timelineDuration"), pp = app.run("timelinePingPong");
+    app.run("timelinePingPong = false");
+    const lt = withHook(m, "clock", () => T * 2.25, () => app.run("timelineLoopTime()"));
+    const fd = withHook(m, "formatDuration", (t) => "<" + t + ">", () => app.run("fmtDur")(3));
+    globalThis.__pp = pp; app.run("timelinePingPong = globalThis.__pp");
+    check(Math.abs(lt - T * 0.25) < 1e-9 && fd === "<3>", "the timeline runs on the model's clock and prints in its units", `loop time ${lt} of ${T}, label ${fd}`);
+  }
+
+  {
+    let calls = 0, arg = null;
+    withHook(m, "renderBed", (g) => { calls++; arg = g; }, () => app.updateBedBuffer());
+    check(calls === 1 && arg === app.run("bedSurface"), "a model that draws the bed surface is asked to, with the surface", `${calls} call(s)`);
+    app.updateBedBuffer();
+  }
+
+  {
+    // Sediment's response to the bed can be the model's. Counted over one particle update
+    // with a bed drawn, so every branch that asks is reached.
+    const R = m.rules, savedBed = S().bedPoints;
+    app.setBedPoints([{ x: 0, z: 60 }, { x: W2, z: 60 }]); app.rebuildUserBedGrid();
+    const n = { slope: 0, chance: 0, boost: 0 };
+    withHook(R, "slope", () => { n.slope++; }, () => withHook(R, "bedSettleChance", () => { n.chance++; return 0; }, () => withHook(R, "settleBoost", () => { n.boost++; return 1; }, () => {
+      app.run("for (const p of particles) { p.born = simTime - 5; p.x = Math.max(p.x, 150); }");
+      app.updateParticles();
+    })));
+    const P = S().particles.length;
+    check(n.slope >= P * 0.9 && n.chance >= P * 0.9 && n.boost >= P * 0.9, "sediment's response to the bed comes from the model's rules when it has them", `${P} particles: slope ${n.slope}, bed settle ${n.chance}, boost ${n.boost}`);
+    app.setBedPoints(savedBed); app.rebuildUserBedGrid();
+  }
 }
 
 // ---------------------------------------------------------------- 8. the model's own checks
@@ -573,10 +676,10 @@ try {
                     { type: "poly", x: 500, y: 300, rotation: 15, points: [{ x: -20, y: -20 }, { x: 20, y: -20 }, { x: 0, y: 25 }], clips: [{ start: 0, dur: Infinity }] }]);
   const sc = app.run("sceneState()");
   const okScene = sc && sc.obstacles.length === 2 && sc.obstacles[0].points === undefined &&
-                  (sc.obstacles[1].points || []).length === 3 && sc.inflow === S().inflowVel &&
+                  (sc.obstacles[1].points || []).length === 3 &&
                   sc.width === S().width && sc.height === S().height &&
                   sc.bed_profile === S().bedPoints && Array.isArray(sc.bed_xsections);
-  check(okScene, "sceneState() describes the drawn scene", sc ? `${sc.obstacles.length} obstacles, ${sc.bed_profile.length} bed points, inflow ${sc.inflow}` : "nothing returned");
+  check(okScene, "sceneState() describes the drawn scene", sc ? `${sc.obstacles.length} obstacles, ${sc.bed_profile.length} bed points` : "nothing returned");
   app.setObstacles([]);
   app.run("solidMaskDirty = true");
 }
