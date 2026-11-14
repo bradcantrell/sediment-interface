@@ -168,8 +168,9 @@ tidal repo's AGENTS.md.
 ## Branches
 
 - `main` — the interface, the river model and the export site (Pages).
-- `shared-core` — the interface/model/site split and the bed in the flow; not yet merged
-  to `main`.
+- `shared-core` — where the interface/model/site split and the bed in the flow were built.
+  Merged into `main` on 2026-11-14 and equal to it since; new work can go on either, and
+  nothing is pushed without Brad's OK.
 - `tidal-prototype` — tidal dev.
 
 ## Checkouts and related repos

@@ -4,10 +4,27 @@ A browser-based sediment-flow sandbox and **OpenFOAM case exporter**. Draw a bed
 
 ## What it does
 
-- **Real-time 2D flow** — a Stam fluid solver with sediment particles (deposition + erosion) and an aggrading bed.
+- **Real-time 2D flow** — a Stam fluid solver with sediment particles (deposition + erosion) and an aggrading bed. The bed is in the flow: water speeds up over a drawn rise or a deposit and slows over a hollow, conserving discharge.
 - **Bed profile editor** — draw a longitudinal profile and transverse cross-sections; the bed surface is carved into the exported mesh.
 - **Obstacle choreography** — place circles, rectangles, and freeform polygons, sequenced on a looping timeline.
 - **OpenFOAM export** — builds a full case (`blockMeshDict`, `snappyHexMeshDict`, boundary + initial fields, obstacle and bed STLs) and downloads it as a ZIP.
+
+## How it is built
+
+The page is three files that load in order and share one script scope.
+
+| File | What it is |
+|---|---|
+| `index.html` | The interface: canvas, sediment particles, the drawn bed and its editor, deposit, obstacles and their timeline, the 3D view, the sidebar. It knows nothing about how water moves. |
+| `model.js` | The model: how the water moves. Here, the river. |
+| `site.js` | What this site does with the scene. Here, the OpenFOAM export. |
+
+`index.html` is shared. Other projects run a different kind of water on the same interface by
+bringing their own `model.js` and `site.js`. The
+[Coastal Sediment Interface](https://github.com/bradcantrell/coastal-sediment-interface) does
+this with a wave and beach model and an XBeach export. Those projects copy `index.html` byte
+for byte and check the copy against a recorded hash, so a fix to the interface is made once,
+here.
 
 ## Running the interface
 
@@ -22,6 +39,18 @@ blockMesh
 snappyHexMesh -overwrite      # carves obstacles + bed from the triSurface STLs
 foamRun -solver incompressibleFluid
 ```
+
+## Testing
+
+```bash
+node dev/headless_harness.js index.html    # exit 0 = pass
+```
+
+The harness loads the three files the way a browser does, with p5 and the DOM mocked, and
+checks behaviour: the draw loop runs, sediment moves, the bed editor works through the real
+mouse handlers, the model and site extension points are used, the river responds to friction
+and to the bed, and the exporter builds a case from the drawn scene. 54 checks. `AGENTS.md`
+describes the layers and the testing rules.
 
 ## Domain
 
