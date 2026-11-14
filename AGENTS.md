@@ -1,34 +1,70 @@
 # Sediment Interface — Project Conventions
 # Auto-loaded by Hermes when working in this directory
 
-Repo `bradcantrell/sediment-interface`. Two related things in one repo:
+Repo `bradcantrell/sediment-interface` (public, GitHub Pages on `main`:
+https://bradcantrell.github.io/sediment-interface/). Two things live here:
 
-1. `index.html` (branch `main`) — the fluvial **Sediment Interface** (public, GitHub Pages).
-2. `tidal-prototype.html` (branch `tidal-prototype`) — the **tidal sediment interface** DEV copy. The canonical/hosted copy lives in repo `bradcantrell/tidal-sediment-interface` as `index.html` (see that repo's AGENTS.md).
+1. The **shared Sediment Interface** and the **river model** that runs in it (branch `main`).
+2. `tidal-prototype.html` (branch `tidal-prototype`) — the tidal interface DEV copy, a
+   separate single-file app. See the last section.
 
-## index.html — fluvial Sediment Interface
+Fully static, no build step, no backend. p5.js 1.11.3 from cdnjs.
 
-Browser sandbox: real-time 2D Stam fluid solver + sediment particles (settle/erode) + aggrading heightfield bed + obstacle choreography (circles/rects/polygons on a looping timeline) + OpenFOAM case export. Fully static, no build.
+## The three layers
 
-- `site.js` — what THIS repo does with the scene: the OpenFOAM export button. Loaded by `index.html` after its own script.
-- `bridge/case_generator.js` — builds the OpenFOAM 14 case (blockMeshDict, snappyHexMeshDict, fields, obstacle/bed STLs), downloads as ZIP.
-- Export domain: 12.8m × 5.77m × 2.0m channel; drawn bed maps to ≤0.5m relief.
-- Hosted: https://bradcantrell.github.io/sediment-interface/ (Pages on `main`).
+The page is three files that load in this order and share one script scope. Know which
+layer a change belongs to before making it.
 
-### Shared interface — `index.html` is used by other repos
+| File | Layer | What it is | Who else uses it |
+|---|---|---|---|
+| `index.html` | **interface** | Canvas, sediment particles, drawn bed (transect + cross-sections), deposit, obstacles and their timeline, 3D view, sidebar. Knows nothing about how water moves. | Every repo, byte for byte |
+| `model.js` | **model** | How the water moves. Here: the river (Stam stable-fluids solver, friction, the bed as depth). Writes the flow field the interface moves sediment through. | Repos that want the river (Sediment Bridge) |
+| `site.js` | **site** | What this repo does with the scene. Here: the OpenFOAM case export. | Nobody; each repo has its own |
 
-`index.html` and `dev/headless_harness.js` are the shared interface. This repo owns them, and
-other repos (first: the private Sediment Bridge) vendor them byte for byte with their own
-`dev/sync_core.sh`, and fail their harness if their copy drifts.
+The same split applies to tests: `dev/headless_harness.js` (interface), `dev/model_checks.js`
+(river model), `dev/site_checks.js` (this site).
 
-- Nothing site-specific goes in `index.html`: no export, no bake, no server URLs. It goes in
-  `site.js`, which registers a backend through the SITE EXTENSION POINT at the end of the
-  script (`registerBackend`, `sceneState()`; the comment there is the reference).
-- Checks for a site's backend go in `dev/site_checks.js`, which the harness loads if present.
-- A change to `index.html` here reaches the other repos only when they sync. After changing
-  it, run their harness too before they sync.
+Rules:
 
-### Testing — `dev/headless_harness.js`
+- **Nothing about water goes in `index.html`.** No solver, no flow parameters, no model
+  sliders. If the interface needs something from the model, it asks through a hook in the
+  MODEL EXTENSION POINT (end of the script in `index.html`; the comment there is the
+  reference for `registerModel`). Add a hook, and a check for it, rather than a name.
+- **Nothing about this site goes in `index.html` or `model.js`.** No export, no bake, no
+  server URLs. That is `site.js`, through the SITE EXTENSION POINT (`registerBackend`,
+  `sceneState()`).
+- **The contract between interface and model is the flow grid**: `NX` x `NY` cells plus a
+  one-cell border, `IX(i, j)`, `cellW` x `cellH` px. The interface owns `u`, `v` and `solid`;
+  the model writes `u` and `v` in `step()`. The model may read the bed (`bedPoints`,
+  `computeUserBedZ`, `depoZ`, `depoGrid`). Sediment rules reach the interface's particle
+  code through `model.rules`, never by global name.
+- **A model's sidebar controls are markup inside `model.js`** (`controls.html`), mounted
+  into `#model-controls`. That wrapper is `display:contents` on purpose: the sidebar is a
+  flex column with a gap, and a plain wrapper packs the rows tighter. The harness cannot
+  see that; a browser can.
+- A different kind of water (waves, tide) is a different `model.js` in its own repo, on the
+  same `index.html`. The coastal interface is the next one to move onto this.
+
+## Other repos vendor these files
+
+This repo owns `index.html`, `model.js`, `dev/headless_harness.js` and `dev/model_checks.js`.
+Other repos copy them byte for byte with their own `dev/sync_core.sh`, record the commit and
+hashes in `dev/core.lock`, and fail their harness if a copy drifts. First: the private
+Sediment Bridge (interface + river model + its own `site.js`).
+
+- Never edit a vendored copy. Change it here, commit, then sync there.
+- A change here reaches the other repos only when they sync. After changing a shared file,
+  run their harness against it before they sync.
+
+## This site: the OpenFOAM export
+
+- `site.js` — the EXPORT CASE button; packs `sceneState()` into a case and downloads a ZIP.
+- `bridge/case_generator.js` — builds the OpenFOAM 14 case (blockMeshDict,
+  snappyHexMeshDict, fields, obstacle/bed STLs). Loaded by `site.js`.
+- Export domain: 12.8 m x 5.77 m x 2.0 m channel; the drawn bed maps to at most 0.5 m of
+  relief (160 px).
+
+## Testing
 
 `node --check` is not a test. It proves the page parses, and it once passed while a
 `TypeError` inside `setup()` had killed the draw loop: the page loaded, the canvas drew,
@@ -36,14 +72,21 @@ and the simulation was dead along with every listener attached after the throw.
 
     node dev/headless_harness.js index.html    # exit 0 = pass, 1 = fail
 
-Twenty-five checks (twenty-three shared, two from `dev/site_checks.js`), all on model state rather than pixels: `setup()` completes, the draw loop
-advances simulation time, particles move downstream, the friction slider reaches the
-solver, a drawn transect edits the bed, every visible strip is clickable, Space unpauses
-exactly once, the friction brush adds and subtracts, still water stays still and leftover
-motion stays within its stated bound, deposit counts as bed, flow over a drawn rise speeds up by the depth ratio and
-conserves discharge, a backend mounts once and gets its frame and its keys,
-`sceneState()` describes the drawn scene, the case generator builds a case from it, and
-nothing goes non-finite.
+The harness loads the page the way a browser does (inline script, then `model.js`, then
+`site.js`, one scope), mocks p5 and the DOM, and asserts on model state rather than pixels.
+32 checks:
+
+- **Interface** (`dev/headless_harness.js`, 18): `setup()` completes, the draw loop advances
+  time, sediment moves, a transect edits the bed, every visible strip is clickable, Space
+  unpauses exactly once, the model extension point works (stepped once per running frame,
+  controls mounted, told when the bed changes, its tool can take the pointer, asked for the
+  scene), the site extension point works (a backend mounts once, gets its frame and keys,
+  `sceneState()` describes the scene), nothing goes non-finite.
+- **River model** (`dev/model_checks.js`, 12): sediment travels downstream, friction slows
+  the field, the friction brush adds and subtracts, still water stays still, leftover motion
+  stays bounded, and the bed is in the flow (see below).
+- **This site** (`dev/site_checks.js`, 2): the export backend mounts, and the real case
+  generator builds a case from `sceneState()`.
 
 Rules that have earned their place:
 
@@ -57,6 +100,19 @@ Rules that have earned their place:
 - **Synthetic events do not drive p5.** The mock records `window.addEventListener`
   handlers so the Space path can be invoked directly; dispatching a `KeyboardEvent` at the
   page does not work headlessly, and p5's own `keyPressed` is not reached.
+- **Moving code between layers must not change behaviour, and that is checkable.** Seed the
+  RNG, run a fixed script (flat bed, drawn bed with a cross-section, friction, restart), and
+  hash `u`, `v`, the particles and the deposit before and after. The split into
+  interface and model (2026-11-13) was accepted on identical hashes at every checkpoint,
+  not on the harness passing.
+- **Look at it in a browser before calling an interface change done.** Headless Chrome is
+  on vlmars: `google-chrome --headless=new --screenshot=out.png file://.../index.html`.
+  Layout is invisible to the harness.
+
+## The river model (`model.js`)
+
+Real-time 2D Stam solver on the 160 x 90 grid, inflow on the left, open outflow on the
+right, global friction plus painted friction zones, and the bed in the flow.
 
 The bed is in the flow, drawn and deposited. With either present, `velocityStep()` uses
 `projectDepth()`, which conserves discharge (`div(h u) = 0`) on a relative depth grid with
@@ -74,19 +130,32 @@ exactly as before. Each of these was measured and is covered by a check; do not 
   Pressure is measured from the outflow and is large upstream; reading a solid cell's zero
   blew the flow up next to obstacles.
 - Deposit is averaged over the flow cell before it becomes depth.
+- `velocityStep()` advects `vPrev` into `v`, so the cross-flow's history lives in `vPrev`.
+  Zeroing `u` and `v` alone does not put the water at rest.
 - Against OpenFOAM on a drawn rise with one obstacle (880k cells, 2026-11-13): RMS
   difference 23% -> 15% of inflow, bias -15% -> -1%, correlation -0.07 -> 0.51.
 
+Known and left alone: `setup()` sets `cellW = width / (NX + 2)` and `windowResized()` sets
+`width / NX`; and `index.html` sets `p5.disableFriendlyErrors` one line before p5 loads,
+which logs a harmless ReferenceError.
+
 ## tidal-prototype.html — tidal model (dev copy)
 
-The TIDAL sediment model (Venice Lagoon). Dev copy only — edit here, then `cp tidal-prototype.html ../tidal-sediment-interface/index.html` and push both repos. Full conventions live in the tidal repo's AGENTS.md.
+The TIDAL sediment model (Venice Lagoon). A separate single-file app, not on the shared
+interface. Dev copy only — edit here, then `cp tidal-prototype.html
+../tidal-sediment-interface/index.html` and push both repos. Full conventions live in the
+tidal repo's AGENTS.md.
 
 ## Branches
 
-- `main` — fluvial interface (Pages).
+- `main` — the interface, the river model and the export site (Pages).
+- `shared-core` — the interface/model/site split and the bed in the flow; not yet merged
+  to `main`.
 - `tidal-prototype` — tidal dev.
 
-## Related
+## Checkouts and related repos
 
-- Private research build (live OpenFOAM coupling, "Sediment Bridge"): `U:/www/sediment-bridge` (see its AGENTS.md).
-- Public tidal interface: `D:/workspace/tidal-sediment-interface`.
+- This repo: `/mnt/vault/projects/sediment-interface` on vlmars; `D:/workspace/sediment-interface` on vlio.
+- Sediment Bridge (PRIVATE, live OpenFOAM coupling): `/mnt/vault/infrastructure/www/sediment-bridge`
+  (`U:/www/sediment-bridge` from Windows). See its AGENTS.md.
+- Coastal interface: repo `coastal-sediment-interface`. Tidal: `D:/workspace/tidal-sediment-interface`.
