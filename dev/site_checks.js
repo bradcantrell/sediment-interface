@@ -19,6 +19,24 @@ module.exports = function ({ app, S, check, ROOT }) {
         paths.some(p => /blockMeshDict$/.test(p)) && paths.some(p => /snappyHexMeshDict$/.test(p)),
         "the case generator builds a case from sceneState()",
         threw ? threw.message : `${out.meta.nObstacles} obstacles, bed ${out.meta.hasBed}, ${paths.length} files`);
+  // The steps shown after an export must not name a file the case does not contain. They
+  // once told the user to run apply_bed.py, which was never in the case.
+  if (out) {
+    const named = (hint) => (hint.match(/[\w.\/-]+\.(?:py|sh|stl)\b/g) || []);
+    const missing = [];
+    for (const hasBed of [false, true]) {
+      const hint = app.run(`exportRunHint({ hasBed: ${hasBed} })`);
+      for (const f of named(hint)) {
+        // a bed file can only be expected of a case that has a bed
+        if (hasBed && !out.meta.hasBed && /bed/.test(f)) continue;
+        if (!paths.some(p => p === f || p.endsWith("/" + f))) missing.push(f);
+      }
+    }
+    const hintBed = app.run("exportRunHint({ hasBed: true })");
+    check(missing.length === 0 && /snappyHexMesh/.test(hintBed) && /foamRun/.test(hintBed),
+          "the steps shown after an export name only files the case contains",
+          missing.length ? `not in the case: ${missing.join(", ")}` : hintBed);
+  }
   app.setObstacles([]);
   app.run("solidMaskDirty = true");
 };

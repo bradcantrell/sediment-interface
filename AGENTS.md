@@ -89,7 +89,7 @@ and the simulation was dead along with every listener attached after the throw.
 
 The harness loads the page the way a browser does (inline script, then `model.js`, then
 `site.js`, one scope), mocks p5 and the DOM, and asserts on model state rather than pixels.
-54 checks:
+55 checks:
 
 - **Interface** (`dev/headless_harness.js`, 39): `setup()` completes, the draw loop advances
   time, sediment moves, a transect edits the bed, every visible strip is clickable, the bed
@@ -104,7 +104,8 @@ The harness loads the page the way a browser does (inline script, then `model.js
 - **River model** (`dev/model_checks.js`, 13): the scene carries the inflow, sediment travels downstream, friction slows
   the field, the friction brush adds and subtracts, still water stays still, leftover motion
   stays bounded, and the bed is in the flow (see below).
-- **This site** (`dev/site_checks.js`, 2): the export backend mounts, and the real case
+- **This site** (`dev/site_checks.js`, 3): the export backend mounts, the steps shown after an
+  export name only files the case contains, and the real case
   generator builds a case from `sceneState()`.
 
 Rules that have earned their place:

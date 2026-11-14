@@ -41,6 +41,15 @@ function decodePngToHeights(dataUrl) {
   });
 }
 
+// The steps shown after an export. They are the same with or without a drawn bed: the bed
+// travels as constant/triSurface/bed.stl and snappyHexMesh carves it along with the obstacles.
+// This used to tell the user to run `python3 apply_bed.py` when a bed was exported. The case
+// has never contained that file.
+function exportRunHint(meta) {
+  return 'run: blockMesh → snappyHexMesh -overwrite → foamRun -solver incompressibleFluid' +
+         (meta && meta.hasBed ? ' (the bed is carved from bed.stl)' : '');
+}
+
 async function exportToOpenFOAM() {
   const result = document.getElementById('export-result');
   const btn = document.getElementById('export-btn');
@@ -64,9 +73,7 @@ async function exportToOpenFOAM() {
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
     const what = meta.nObstacles + ' obstacle(s)' + (meta.hasBed ? ' + bed' : '');
-    const run = meta.hasBed
-      ? 'run: blockMesh → python3 apply_bed.py → snappyHexMesh -overwrite → foamRun'
-      : 'run: blockMesh → snappyHexMesh -overwrite → foamRun';
+    const run = exportRunHint(meta);
     result.innerHTML = 'exported ' + what + ' → sediment-openfoam-case.zip<br><span style="color:#888">' + run + '</span>';
   } catch (e) {
     result.innerHTML = '<span style="color:#f66">export failed: ' + e.message + '</span>';
