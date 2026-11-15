@@ -112,10 +112,25 @@
       font-size: 9px; color: rgba(255,255,255,0.35); line-height: 1.4;
       margin-bottom: 6px; max-width: 100%;
     }
+
+    /* The row of model tabs at the top of the sidebar (see SITE TABS). */
+    #site-tabs { display: flex; gap: 4px; align-items: stretch; margin-bottom: 2px; }
+    #site-tabs .tab {
+      flex: 1; padding: 4px 0; font-size: 9px; text-align: center; text-decoration: none;
+      text-transform: uppercase; letter-spacing: 1px;
+      border: 1px solid rgba(255,255,255,0.1); border-radius: 2px;
+      color: rgba(255,255,255,0.3); transition: all 0.15s;
+    }
+    #site-tabs a.tab:hover { border-color: rgba(255,255,255,0.25); color: rgba(255,255,255,0.5); }
+    #site-tabs .tab-on {
+      color: rgba(255,200,100,0.8); border-color: rgba(255,200,100,0.4);
+      background: rgba(255,200,100,0.08); cursor: default;
+    }
   </style>
 </head>
 <body>
 <div id="sidebar">
+    <div id="site-tabs"></div>
     <div id="sidebar-stats" style="font-size:10px;color:rgba(255,255,255,0.4);line-height:1.6;margin-bottom:4px;">
       sim-time: <span class="hv" id="simtime">0.0</span>s &nbsp; mobile: <span class="hv" id="mobile">0</span><br>
       deposited: <span class="hv" id="deposited">0</span> &nbsp; obstacles: <span class="hv" id="obstacles">0</span><br>
@@ -1366,12 +1381,22 @@ function setup() {
   window.addEventListener('mouseup', timelineMouseUp);
   updateTimelineVisibility();
 
+  // A scene saved the last time this tab was open replaces the default one (see THE SAVED
+  // SCENE). Before the spin-up, so the flow develops around the obstacles that will be there.
+  const saved = readSavedScene();
+  if (saved) { applySavedScene(saved); updateToggles(); }
+
   // Let the flow develop before the first frame. A model whose step() does more than flow
   // (the coast moves the bed) supplies its own.
   if (model.spinUp) model.spinUp();
   else for (let k=0; k<80; k++) { simTime+=DT; buildSolidMask(); model.step(); }
   initParticles();
   mountBackends();
+  if (saved) applySavedControls(saved.controls);   // the site's own controls exist only now
+  // Leaving the page (another tab, a reload, closing it) saves the scene.
+  window.addEventListener('pagehide', saveScene);
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') saveScene(); });
+  sceneSaveArmed = true;
 }
 
 function draw() {
@@ -2100,6 +2125,8 @@ function mountModel() {
 //     frame() {},                      // optional, runs every frame after the scene is drawn
 //     keys:  { b: fn },                // optional, lower-case key -> handler
 //     help:  'B bake',                 // optional, appended to the key list
+//     tab:   { id: 'bridge', label: 'bridge' },   // optional, for a site that is not in
+//                                      // SITE_TABS: adds a tab for this page, marked current
 //   });
 //
 // site.js runs in this script's scope, after model.js, so a backend reads the flow directly
@@ -2113,7 +2140,7 @@ function registerBackend(b) {
   if (!b || !b.id) throw new Error('registerBackend: a backend needs an id');
   if (backends.some(x => x.id === b.id)) throw new Error('registerBackend: duplicate id ' + b.id);
   backends.push(b);
-  if (backendsMounted) mountBackend(b);
+  if (backendsMounted) { mountBackend(b); mountTabs(); }
 }
 
 function mountBackend(b) {
@@ -2129,6 +2156,7 @@ function mountBackends() {
   if (backendsMounted) return;
   backendsMounted = true;
   for (const b of backends) mountBackend(b);
+  mountTabs();
 }
 
 function backendFrame() { for (const b of backends) if (b.frame) b.frame(); }
@@ -2153,6 +2181,200 @@ function sceneState() {
   };
   if (model.scene) model.scene(st);      // the model adds what only it knows (the river: inflow)
   return st;
+}
+
+// ─────────────────────────────────────────────
+// SITE TABS
+// ─────────────────────────────────────────────
+// Every site that runs this interface shows the same row of tabs, one per model. A tab is a
+// link to that model's own site: switching loads the other page, it does not swap the model
+// inside this one (a page registers exactly one model). To add a model, add a line here and
+// sync the interface into the repos that use it. `model` is the id that site's model.js
+// registers, which is how a page knows which tab it is, whatever address it is served from.
+const SITE_TABS = [
+  { id: 'river', label: 'river', model: 'river', url: 'https://bradcantrell.github.io/sediment-interface/' },
+  { id: 'coast', label: 'coast', model: 'coast', url: 'https://bradcantrell.github.io/coastal-sediment-interface/' },
+];
+
+// The tabs this page shows. A site that is not in the list (a private or local one) names
+// its own tab through its backend, and that tab is the current one.
+function siteTabs() {
+  const tabs = SITE_TABS.map(t => ({ id: t.id, label: t.label, url: t.url, current: false, model: t.model }));
+  const own = backends.find(b => b.tab && b.tab.id);
+  if (own) {
+    let t = tabs.find(x => x.id === own.tab.id);
+    if (!t) { t = { id: own.tab.id, label: own.tab.label || own.tab.id, url: null }; tabs.push(t); }
+    t.current = true;
+  } else {
+    const t = tabs.find(x => model && x.model === model.id);
+    if (t) t.current = true;
+  }
+  return tabs;
+}
+
+// The id the saved scene is filed under: this page's tab, or its model if it has no tab yet.
+function currentTabId() {
+  const t = siteTabs().find(x => x.current);
+  return t ? t.id : (model ? model.id : 'none');
+}
+
+function mountTabs() {
+  const bar = document.getElementById('site-tabs');
+  if (!bar) return;
+  const esc = (x) => String(x).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  bar.innerHTML = siteTabs().map(t => t.current
+    ? '<span class="tab tab-on" data-tab="' + esc(t.id) + '">' + esc(t.label) + '</span>'
+    : '<a class="tab" data-tab="' + esc(t.id) + '" href="' + esc(t.url) + '">' + esc(t.label) + '</a>').join('') +
+    '<button class="reset-btn" id="reset-scene" title="forget the saved scene and start this model fresh">new</button>';
+  const rb = document.getElementById('reset-scene');
+  if (rb) rb.addEventListener('click', resetSavedScene);
+}
+
+// ─────────────────────────────────────────────
+// THE SAVED SCENE
+// ─────────────────────────────────────────────
+// Leaving a tab and coming back finds it as it was left: the obstacles and their timeline
+// clips, the drawn bed, every sidebar control (the model's and the site's included, since
+// they are inputs in the sidebar) and the view toggles. It is kept in this browser only
+// (localStorage), one scene per tab, and nothing is carried from one model to another.
+//
+// What is drawn and set is saved. What the run has produced is not: particles, deposit, the
+// clock, and anything a model keeps of its own (the river's painted friction, the coast's
+// moved bed) start fresh. The page starts paused, as always.
+const SAVE_VERSION = 1;
+let sceneSaveArmed = false;       // set at the end of setup(): a page that never finished loading saves nothing
+const restoredControls = new Set();
+
+function savedSceneKey() { return 'sediment-interface/scene/' + currentTabId(); }
+function sceneStore() { try { return window.localStorage || null; } catch (e) { return null; } }
+
+// The sidebar's inputs and selects that have an id. Buttons are not state; file inputs
+// cannot be set.
+function sidebarControls() {
+  if (typeof document.querySelectorAll !== 'function') return [];
+  return Array.from(document.querySelectorAll('#sidebar input, #sidebar select'))
+    .filter(e => e && e.id && e.type !== 'file' && e.type !== 'button');
+}
+
+function captureScene() {
+  const controls = {};
+  for (const e of sidebarControls()) controls[e.id] = (e.type === 'checkbox') ? !!e.checked : String(e.value);
+  return {
+    v: SAVE_VERSION, tab: currentTabId(), width, height,
+    // JSON has no Infinity, and a clip without a dur means the default life, so an
+    // always-on clip is written as 'inf'.
+    obstacles: obstacles.map(o => Object.assign({}, o, o.clips ? { clips: o.clips.map(c => Object.assign({}, c, { dur: c.dur === Infinity ? 'inf' : c.dur })) } : {})),
+    bedPoints, bedXSections, controls,
+    view: { showFlow, showGrid, elevMode, timelineEnabled, timelinePingPong, thumbAngleX, thumbAngleY },
+  };
+}
+
+function saveScene() {
+  if (!sceneSaveArmed) return false;
+  const store = sceneStore();
+  if (!store) return false;
+  try { store.setItem(savedSceneKey(), JSON.stringify(captureScene())); return true; }
+  catch (e) { return false; }      // storage full or refused: the page works without it
+}
+
+function discardSavedScene() {
+  const store = sceneStore();
+  try { if (store) store.removeItem(savedSceneKey()); } catch (e) {}
+}
+
+// The "new" button: forget the saved scene and load the model's defaults.
+function resetSavedScene() {
+  sceneSaveArmed = false;          // or leaving the page would save it straight back
+  discardSavedScene();
+  if (window.location && typeof window.location.reload === 'function') window.location.reload();
+}
+
+function sceneIsValid(s) {
+  const num = (x) => typeof x === 'number' && isFinite(x);
+  if (!s || s.v !== SAVE_VERSION || !num(s.width) || !num(s.height) || s.width <= 0 || s.height <= 0) return false;
+  if (!Array.isArray(s.obstacles) || !Array.isArray(s.bedPoints) || !Array.isArray(s.bedXSections)) return false;
+  for (const o of s.obstacles) {
+    if (!o || typeof o.type !== 'string' || !num(o.x) || !num(o.y)) return false;
+    if (o.type === 'poly' && !(Array.isArray(o.points) && o.points.every(p => p && num(p.x) && num(p.y)))) return false;
+    if (o.clips && !(Array.isArray(o.clips) && o.clips.every(c => c && (c.dur == null || c.dur === 'inf' || num(c.dur))))) return false;
+  }
+  if (!s.bedPoints.every(p => p && num(p.x) && num(p.z))) return false;
+  if (!s.bedXSections.every(xs => xs && num(xs.x) && Array.isArray(xs.points) && xs.points.every(q => q && num(q.y) && num(q.z)))) return false;
+  return !s.controls || typeof s.controls === 'object';
+}
+
+// The scene saved for this tab, or null. One that cannot be read (damaged, or written by a
+// version this page does not know) is thrown away whole rather than half applied.
+function readSavedScene() {
+  const store = sceneStore();
+  if (!store) return null;
+  let raw = null;
+  try { raw = store.getItem(savedSceneKey()); } catch (e) { return null; }
+  if (!raw) return null;
+  let s = null;
+  try { s = JSON.parse(raw); } catch (e) { s = null; }
+  if (!sceneIsValid(s)) { discardSavedScene(); return null; }
+  return s;
+}
+
+// Put a saved scene back. The scene is in canvas pixels, and the flow grid stretches with
+// the canvas, so a scene saved in a window of another size is stretched the same way and
+// stays over the same cells. Elevations are not pixels and are left alone.
+function applySavedScene(s) {
+  const sx = width / s.width, sy = height / s.height;
+  obstacles = s.obstacles.map(o => {
+    const ob = Object.assign({}, o);
+    ob.x *= sx; ob.y *= sy;
+    if (ob.w != null) ob.w *= sx;
+    if (ob.h != null) ob.h *= sy;
+    if (ob.size != null) ob.size *= sx;
+    if (ob.points) ob.points = ob.points.map(p => ({ x: p.x * sx, y: p.y * sy }));
+    if (ob.clips) ob.clips = ob.clips.map(c => Object.assign({}, c, { dur: c.dur === 'inf' ? Infinity : c.dur }));
+    return ob;
+  });
+  selectedIdx = -1; selectedClip = -1; solidMaskDirty = true;
+
+  // A cross-section belongs to the transect point with the same x, so both are scaled by
+  // the same multiplication and still match exactly.
+  bedPoints = s.bedPoints.map(p => ({ x: p.x * sx, z: p.z }));
+  bedXSections = s.bedXSections.map(xs => ({ x: xs.x * sx, points: xs.points.map(q => ({ y: q.y * sy, z: q.z })) }));
+  activeXSection = -1;
+
+  const vw = s.view || {};
+  if (typeof vw.showFlow === 'boolean') showFlow = vw.showFlow;
+  if (typeof vw.showGrid === 'boolean') showGrid = vw.showGrid;
+  if (Number.isInteger(vw.elevMode) && vw.elevMode >= 0 && vw.elevMode < 5) { elevMode = vw.elevMode; showElev = elevMode > 0; }
+  if (typeof vw.timelineEnabled === 'boolean') timelineEnabled = vw.timelineEnabled;
+  if (typeof vw.timelinePingPong === 'boolean') timelinePingPong = vw.timelinePingPong;
+  if (isFinite(vw.thumbAngleX)) thumbAngleX = vw.thumbAngleX;
+  if (isFinite(vw.thumbAngleY)) thumbAngleY = Math.max(5, Math.min(85, vw.thumbAngleY));
+  const pp = document.getElementById('toggle-pingpong');
+  if (pp) pp.textContent = timelinePingPong ? 'pingpong' : 'loop';
+
+  restoredControls.clear();
+  applySavedControls(s.controls);
+  updateTimelineVisibility();
+  updateBedBuffer();               // rebuilds the bed grid and tells the model the bed changed
+  updateBedThumb();
+}
+
+// Set each saved control and fire the event its listener waits for, so the variable behind
+// it changes the same way it does under the user's hand. Called twice in setup(): a site's
+// controls are mounted last, and each control is set once.
+function applySavedControls(saved) {
+  if (!saved) return;
+  const fire = (e, type) => { if (typeof e.dispatchEvent === 'function' && typeof Event === 'function') e.dispatchEvent(new Event(type, { bubbles: true })); };
+  const list = sidebarControls().filter(e => Object.prototype.hasOwnProperty.call(saved, e.id) && !restoredControls.has(e.id));
+  const selects = list.filter(e => e.tagName === 'SELECT'), inputs = list.filter(e => e.tagName !== 'SELECT');
+  // A select first (a preset fills in sliders), then the sliders with their saved values,
+  // then the select's own value again, because moving a slider may have reset it.
+  for (const e of selects) { e.value = saved[e.id]; fire(e, 'change'); }
+  for (const e of inputs) {
+    if (e.type === 'checkbox') e.checked = !!saved[e.id]; else e.value = saved[e.id];
+    fire(e, 'input'); fire(e, 'change');
+  }
+  for (const e of selects) e.value = saved[e.id];
+  for (const e of list) restoredControls.add(e.id);
 }
 
 </script>

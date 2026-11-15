@@ -60,6 +60,34 @@ Rules:
   field, bed change and model time in its `model.js`, the XBeach export in its `site.js`.
   A change here must pass the coastal repo's harnesses too before that repo syncs.
 
+## Tabs and the saved scene
+
+Both live in `index.html`, so every site gets them through the sync.
+
+- **Tabs.** `SITE_TABS` in `index.html` lists the models: id, label, the id its `model.js`
+  registers, and the public address of its site. The sidebar shows one tab per entry. A tab
+  is a link to the other site, so switching is a page load; a page never holds two models.
+  A page knows which tab it is by its model id, not its address, so local copies work.
+  **To add a model:** add a line to `SITE_TABS`, commit, sync the repos that vendor the
+  interface. A site that must not be listed here (the private bridge, a local experiment)
+  names its own tab instead: `registerBackend({ ..., tab: { id, label } })` in its `site.js`.
+  Nothing private goes in `SITE_TABS`; this file is public.
+- **The saved scene.** Leaving the page (`pagehide`) writes the scene to `localStorage`
+  under `sediment-interface/scene/<tab id>`, and `setup()` puts it back before the spin-up.
+  Saved: obstacles with their clips, the drawn bed, every `input` and `select` in the
+  sidebar that has an id (the model's and the site's included; they are restored by setting
+  the value and firing `input`/`change`, so a control only comes back if its listener does
+  the work), and the view toggles. Not saved: particles, deposit, the clock, pause, and
+  anything a model keeps itself (the river's painted friction, the coast's moved bed). The
+  `new` button in the tab row forgets the scene and reloads. Both public sites are on the
+  same origin (`bradcantrell.github.io`) and share one storage quota, which is why the key
+  carries the tab id and why grids are not saved.
+- A new sidebar control is saved without any work **if it is an `input` or `select` with an
+  id**. State kept only in a variable (a toggle button) is not; add it to `captureScene()`
+  and `applySavedScene()` with a check, or to a model hook when models need one.
+- Changing what a saved scene contains: bump `SAVE_VERSION`. Older saves are then discarded,
+  not migrated.
+
 ## Other repos vendor these files
 
 This repo owns `index.html`, `model.js`, `dev/headless_harness.js` and `dev/model_checks.js`.
@@ -89,9 +117,9 @@ and the simulation was dead along with every listener attached after the throw.
 
 The harness loads the page the way a browser does (inline script, then `model.js`, then
 `site.js`, one scope), mocks p5 and the DOM, and asserts on model state rather than pixels.
-55 checks:
+64 checks:
 
-- **Interface** (`dev/headless_harness.js`, 39): `setup()` completes, the draw loop advances
+- **Interface** (`dev/headless_harness.js`, 48): `setup()` completes, the draw loop advances
   time, sediment moves, a transect edits the bed, every visible strip is clickable, the bed
   editor works through the real mouse handlers (bed mode restores the pause state, a click
   lands at the elevation under the pointer, drags stop at the range, a signed range goes
@@ -100,7 +128,10 @@ The harness loads the page the way a browser does (inline script, then `model.js
   controls mounted, told when the bed changes, its tool can take the pointer, asked for the
   scene, and every optional hook is used: bed layers, default bed, non-solid objects, own
   object kinds, keys, clock, bed rendering, readouts, sediment rules, setup hooks), the site extension point works (a backend mounts once, gets its frame and keys,
-  `sceneState()` describes the scene), nothing goes non-finite.
+  `sceneState()` describes the scene), the tabs and the saved scene work (nothing is saved
+  before `setup()` finishes, `setup()` restores a scene seeded before it ran, leaving the
+  page saves, a scene round-trips and stretches to another canvas size, a damaged one is
+  discarded, each tab has its own, `new` forgets it), nothing goes non-finite.
 - **River model** (`dev/model_checks.js`, 13): the scene carries the inflow, sediment travels downstream, friction slows
   the field, the friction brush adds and subtracts, still water stays still, leftover motion
   stays bounded, and the bed is in the flow (see below).

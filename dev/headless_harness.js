@@ -26,6 +26,11 @@
 //   8. the model's own checks       — dev/model_checks.js, if there is one
 //   9. the site extension point works — a backend mounts once, runs every frame, gets its
 //                                     keys, and sceneState() describes the drawn scene
+//  9b. tabs and the saved scene    — one tab per listed model with this page's marked, a
+//                                     scene saved on leaving comes back in setup() and
+//                                     round-trips (obstacles, clips, bed, controls through
+//                                     their own listeners), stretches to another canvas size,
+//                                     is filed per tab, and a damaged one is thrown away
 //  10. the site's own checks        — dev/site_checks.js, if there is one
 //  11. nothing has gone non-finite
 //
@@ -64,6 +69,7 @@ for (const m of html.matchAll(/<select[^>]*id="([^"]+)"[^>]*>([\s\S]*?)<\/select
   const opt = m[2].match(/value="([^"]*)"/);
   if (opt && !(m[1] in DEFAULTS)) DEFAULTS[m[1]] = opt[1];
 }
+const SELECT_IDS = new Set([...(html + modelSrc + siteSrc).matchAll(/<select[^>]*id="([^"]+)"/g)].map(m => m[1]));
 
 // ---------------------------------------------------------------- p5 / DOM mocks
 const noop = () => {};
@@ -103,7 +109,14 @@ function el(id) {
     value: id in DEFAULTS ? DEFAULTS[id] : "0",
     width: 200, height: 120, style: {}, dataset: {},
     classList: { add: noop, remove: noop, toggle: noop, contains: () => false },
-    addEventListener: noop, removeEventListener: noop, appendChild: noop, removeChild: noop,
+    tagName: SELECT_IDS.has(id) ? "SELECT" : (id in DEFAULTS ? "INPUT" : "DIV"),
+    type: SELECT_IDS.has(id) ? "select-one" : (id in DEFAULTS ? "range" : ""),
+    // Listeners are kept and dispatchEvent() calls them, so a check can move a control the
+    // way the page does and see the variable behind it change.
+    __listeners: {},
+    addEventListener(t, fn) { (this.__listeners[t] = this.__listeners[t] || []).push(fn); },
+    dispatchEvent(ev) { for (const fn of (this.__listeners[ev.type] || [])) fn.call(this, ev); return true; },
+    removeEventListener: noop, appendChild: noop, removeChild: noop,
     getContext: () => ctx(), setAttribute: noop, getAttribute: () => null,
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 120 }),
     querySelector: () => el(id + "-child"), querySelectorAll: () => [],
@@ -115,18 +128,31 @@ function el(id) {
 
 global.__keydown = [];
 global.__keyup = [];
+// A localStorage that stores, so the saved scene can be written and read back.
+global.__store = new Map();
+global.__pagehide = [];
+global.__reloads = 0;
 global.window = {
-  addEventListener: (t, fn) => { if (t === 'keydown') global.__keydown.push(fn); },
+  addEventListener: (t, fn) => { if (t === 'keydown') global.__keydown.push(fn); if (t === 'pagehide') global.__pagehide.push(fn); },
   removeEventListener: noop,
   innerWidth: 1200, innerHeight: 800, devicePixelRatio: 1,
-  location: { href: "http://localhost/", search: "" },
-  requestAnimationFrame: noop, localStorage: { getItem: () => null, setItem: noop },
+  location: { href: "http://localhost/", search: "", reload: () => { global.__reloads++; } },
+  requestAnimationFrame: noop,
+  localStorage: {
+    getItem: (k) => (global.__store.has(k) ? global.__store.get(k) : null),
+    setItem: (k, v) => { global.__store.set(k, String(v)); },
+    removeItem: (k) => { global.__store.delete(k); },
+  },
 };
 global.document = {
   getElementById: el, createElement: () => el("created"),
   addEventListener: noop, removeEventListener: noop,
   body: el("body"), documentElement: el("html"),
-  querySelector: () => el("q"), querySelectorAll: () => [],
+  querySelector: () => el("q"),
+  // The sidebar's controls are the ids the markup gives a value (and the selects). Only
+  // those already on the page: a site's controls exist once its backend has mounted them.
+  querySelectorAll: (sel) => (/#sidebar/.test(sel) && /input/.test(sel)
+    ? Object.keys(DEFAULTS).filter(id => els.has(id) || SELECT_IDS.has(id)).map(el) : []),
 };
 global.navigator = { userAgent: "node", language: "en" };
 
@@ -354,7 +380,8 @@ app.run(`(function () {
   // Setup-time hooks. Watching one the model does not have is harmless, except spinUp, which
   // replaces the default spin-up when present, so it is only wrapped if the model has it.
   const gr = model.bedGridsReady; model.bedGridsReady = function () { w.gridsReady++; w.gwAtGridsReady = GW; if (gr) return gr.apply(model, arguments); };
-  const sr = model.sceneReady; model.sceneReady = function () { w.sceneReady++; w.obstaclesAtSceneReady = obstacles.length; if (sr) return sr.apply(model, arguments); };
+  const sr = model.sceneReady; model.sceneReady = function () { w.sceneReady++; w.obstaclesAtSceneReady = obstacles.length; const r = sr ? sr.apply(model, arguments) : undefined;
+    w.defaultObstacles = obstacles.map(o => Object.assign({}, o, { clips: (o.clips || []).map(c => Object.assign({}, c)) })); return r; };
   const su = model.spinUp; if (su) model.spinUp = function () { w.spinUp++; return su.apply(model, arguments); };
   const hd = model.hud; model.hud = function () { w.hud++; if (hd) return hd.apply(model, arguments); };
 })()`);
@@ -370,9 +397,36 @@ app.run(`registerBackend({
   help: 'Q probe',
 })`);
 
+// A scene saved before this page loaded, the way a browser would hold one from the last
+// visit. Its obstacles are the default three in the default places (so the flow spins up as
+// it always has) with a mark on the first, a slider off its default, and the grid on. Section
+// 9b checks that setup() put it back, then puts the model's own defaults back.
+const SEED = { trailFade: "9" };
+{
+  const inf = [{ start: 0, dur: "inf" }];
+  const before = app.run("saveScene()");
+  globalThis.__savedBeforeSetup = before;
+  global.__store.set(app.run("savedSceneKey()"), JSON.stringify({
+    v: 1, width: W, height: H,
+    obstacles: [{ type: "circle", x: W * 0.2, y: H * 0.35, w: 40, h: 40, rotation: 0, clips: inf, mark: "seeded" },
+                { type: "rect", x: W * 0.35, y: H * 0.6, w: 40, h: 40, rotation: 30, clips: inf },
+                { type: "rect", x: W * 0.55, y: H * 0.4, w: 40, h: 40, rotation: -15, clips: inf }],
+    bedPoints: [], bedXSections: [], controls: { "trail-fade": SEED.trailFade }, view: { showGrid: true },
+  }));
+}
+
 // ---------------------------------------------------------------- 1. setup
 try {
   app.setup();
+  // What setup() restored, looked at now, before any check moves it. The model's own
+  // default scene then goes back, so every check below starts where it always has.
+  globalThis.__restored = {
+    mark: (S().obstacles[0] || {}).mark, n: S().obstacles.length, dur: ((S().obstacles[0] || {}).clips || [{}])[0].dur,
+    trailFade: app.run("trailFade"), showGrid: app.run("showGrid"),
+  };
+  app.setObstacles(globalThis.__model.defaultObstacles || S().obstacles);
+  app.run("solidMaskDirty = true; showGrid = false");
+  { const tf = el("trail-fade"); tf.value = DEFAULTS["trail-fade"]; tf.dispatchEvent(new Event("input")); }
   globalThis.__model.stepsAtSpinUp = globalThis.__model.step;
   check(true, "setup() completes without throwing", "clean");
 } catch (e) {
@@ -682,6 +736,116 @@ try {
   check(okScene, "sceneState() describes the drawn scene", sc ? `${sc.obstacles.length} obstacles, ${sc.bed_profile.length} bed points` : "nothing returned");
   app.setObstacles([]);
   app.run("solidMaskDirty = true");
+}
+
+// ---------------------------------------------------------------- 9b. tabs and the saved scene
+{
+  const key = () => app.run("savedSceneKey()");
+  const setCtl = (id, v) => { const e = el(id); e.value = String(v); e.dispatchEvent(new Event("input")); };
+  const r = globalThis.__restored;
+
+  check(globalThis.__savedBeforeSetup === false, "nothing is saved before setup() has finished", `saveScene() returned ${globalThis.__savedBeforeSetup}`);
+  check(r.mark === "seeded" && r.n === 3 && r.dur === Infinity && r.trailFade === 9 && r.showGrid === true,
+        "setup() puts back the scene saved on the last visit",
+        `first obstacle ${r.mark || "default"}, ${r.n} obstacles, clip ${r.dur}, trail fade ${r.trailFade}, grid ${r.showGrid}`);
+
+  // Leaving the page saves.
+  global.__store.clear();
+  for (const fn of global.__pagehide) fn();
+  const left = global.__store.get(key());
+  check(global.__pagehide.length === 1 && !!left && JSON.parse(left).v === 1, "leaving the page saves the scene",
+        `${global.__pagehide.length} pagehide listener(s), ${left ? left.length + " bytes" : "nothing"} stored`);
+
+  // Round trip: draw a scene, save it, wreck it, read it back.
+  const bed0 = S().bedPoints, xs0 = app.run("bedXSections"), flow0 = app.run("showFlow"), Wc = S().width, Hc = S().height;
+  app.setObstacles([{ type: "circle", x: 300, y: 200, w: 50, h: 70, rotation: 0, clips: [{ start: 0, dur: Infinity }] },
+                    { type: "poly", x: 500, y: 300, rotation: 15, points: [{ x: -20, y: -20 }, { x: 20, y: -20 }, { x: 0, y: 25 }], clips: [{ start: 4, dur: 12 }, { start: 30 }] },
+                    { type: "rect", kind: "__own", x: 700, y: 400, w: 30, h: 20, rotation: 0, clips: [{ start: 0, dur: Infinity }] }]);
+  app.setBedPoints([{ x: 100, z: 20 }, { x: 600, z: 55 }, { x: 1000, z: 10 }]);
+  globalThis.__xs = [{ x: 600, points: [{ y: 100, z: -5 }, { y: 500, z: 12 }] }]; app.run("bedXSections = globalThis.__xs");
+  setCtl("trail-fade", 13); app.run("showFlow = " + !flow0);
+  const wrote = app.run("saveScene()");
+  const wreck = () => { app.setObstacles([]); app.setBedPoints([]); app.run("bedXSections = []"); setCtl("trail-fade", 3); app.run("showFlow = " + flow0); };
+  wreck();
+  app.run("applySavedScene(readSavedScene())");
+  {
+    const o = S().obstacles, b = S().bedPoints, x = app.run("bedXSections");
+    const ok = wrote === true && o.length === 3 && o[0].type === "circle" && o[0].x === 300 && o[0].h === 70 && o[0].clips[0].dur === Infinity &&
+               o[1].points.length === 3 && o[1].points[2].y === 25 && o[1].clips[0].dur === 12 && o[1].clips[1].dur === undefined && o[2].kind === "__own" &&
+               b.length === 3 && b[1].x === 600 && b[1].z === 55 && x.length === 1 && x[0].x === 600 && x[0].points[1].z === 12 &&
+               app.run("trailFade") === 13 && el("trail-fade").value === "13" && app.run("showFlow") === !flow0;
+    check(ok, "a saved scene comes back as it was: obstacles, clips, bed, a slider through its own listener, a view toggle",
+          `${o.length} obstacles, clips ${o[0] ? o[0].clips[0].dur : "-"}/${o[1] ? o[1].clips[0].dur : "-"}, ${b.length} bed points, ${x.length} cross-section, trail fade ${app.run("trailFade")}`);
+  }
+
+  // A scene saved in a window twice as wide and half as tall lands on the same cells.
+  {
+    const sv = JSON.parse(global.__store.get(key())); sv.width = Wc * 2; sv.height = Hc / 2;
+    global.__store.set(key(), JSON.stringify(sv));
+    wreck(); app.run("applySavedScene(readSavedScene())");
+    const o = S().obstacles, b = S().bedPoints, x = app.run("bedXSections");
+    const ok = o[0].x === 150 && o[0].y === 400 && o[0].w === 25 && o[0].h === 140 && o[1].points[2].y === 50 &&
+               b[1].x === 300 && b[1].z === 55 && x[0].x === b[1].x && x[0].points[1].y === 1000 && x[0].points[1].z === 12;
+    check(ok, "a scene saved at another canvas size is stretched to this one, and elevations are left alone",
+          o[0] ? `circle at ${o[0].x},${o[0].y} size ${o[0].w}x${o[0].h}; bed point x ${b[1].x} z ${b[1].z}; cross-section still on its station: ${x[0].x === b[1].x}` : "nothing restored");
+  }
+
+  // A damaged save is thrown away whole and the scene on screen is not touched.
+  {
+    const live = S().obstacles, good = JSON.parse(global.__store.get(key()));
+    const bads = { "not JSON": "{{{", "unknown version": JSON.stringify(Object.assign({}, good, { v: 99 })),
+                   "an obstacle with no position": JSON.stringify(Object.assign({}, good, { obstacles: [{ type: "rect", x: null, y: 5 }] })),
+                   "no bed": JSON.stringify(Object.assign({}, good, { bedPoints: "x" })) };
+    const res = [];
+    for (const name in bads) {
+      global.__store.set(key(), bads[name]);
+      const got = app.run("readSavedScene()");
+      res.push(name + ": " + (got === null && !global.__store.has(key()) ? "discarded" : "KEPT"));
+    }
+    check(res.every(x => /discarded$/.test(x)) && S().obstacles === live, "a damaged saved scene is thrown away and the scene is left alone", res.join("; "));
+  }
+
+  // Tabs: one per listed model, this page's marked, the others links. A scene is filed per tab.
+  {
+    const tabs = app.run("SITE_TABS"), mid = app.run("model.id"), bar = el("site-tabs");
+    app.run("mountTabs()");
+    const mine = tabs.find(t => t.model === mid);
+    const links = tabs.filter(t => t !== mine).every(t => bar.innerHTML.includes(`<a class="tab" data-tab="${t.id}" href="${t.url}">`));
+    const cur = !mine || bar.innerHTML.includes(`<span class="tab tab-on" data-tab="${mine.id}">`);
+    const ids = new Set(tabs.map(t => t.id)), models = new Set(tabs.map(t => t.model));
+    check(tabs.length >= 2 && ids.size === tabs.length && models.size === tabs.length && links && cur && tabs.every(t => /^https:\/\//.test(t.url)),
+          "the tab bar lists every model once, marks this page's and links the others",
+          `${tabs.map(t => t.id).join(", ")}; this page: ${mine ? mine.id : "not listed (model " + mid + ")"}`);
+
+    const k0 = key();
+    app.run("saveScene()");
+    app.run("registerBackend({ id: '__tab', tab: { id: '__here', label: 'here' } })");
+    const k1 = key(), seen = app.run("readSavedScene()");
+    const own = bar.innerHTML.includes('<span class="tab tab-on" data-tab="__here">here</span>') &&
+                tabs.every(t => bar.innerHTML.includes(`data-tab="${t.id}" href="${t.url}"`));
+    app.run("backends.splice(backends.findIndex(b => b.id === '__tab'), 1); mountTabs()");
+    check(k1 !== k0 && seen === null && own && key() === k0 && app.run("readSavedScene()") !== null,
+          "a site names its own tab through its backend, and a scene saved under one tab is not seen under another",
+          `keys ${k0} / ${k1}`);
+  }
+
+  // The "new" button forgets the scene, reloads, and does not save it straight back.
+  {
+    app.run("saveScene()");
+    const had = global.__store.has(key()), n0 = global.__reloads;
+    app.run("resetSavedScene()");
+    for (const fn of global.__pagehide) fn();
+    check(had && !global.__store.has(key()) && global.__reloads === n0 + 1, "\"new\" forgets the saved scene and reloads the page",
+          `stored before ${had}, after ${global.__store.has(key())}, ${global.__reloads - n0} reload(s)`);
+    app.run("sceneSaveArmed = true");
+  }
+
+  // Put the scene back the way section 9 left it.
+  app.setObstacles([]); app.setBedPoints(bed0); globalThis.__xs = xs0;
+  app.run("bedXSections = globalThis.__xs; solidMaskDirty = true; showFlow = " + flow0);
+  setCtl("trail-fade", DEFAULTS["trail-fade"]);
+  app.rebuildUserBedGrid(); app.updateBedBuffer();
+  global.__store.clear();
 }
 
 // ---------------------------------------------------------------- 10. the site's own checks

@@ -7,6 +7,7 @@ A browser-based sediment-flow sandbox and **OpenFOAM case exporter**. Draw a bed
 - **Real-time 2D flow** — a Stam fluid solver with sediment particles (deposition + erosion) and an aggrading bed. The bed is in the flow: water speeds up over a drawn rise or a deposit and slows over a hollow, conserving discharge.
 - **Bed profile editor** — draw a longitudinal profile and transverse cross-sections; the bed surface is carved into the exported mesh.
 - **Obstacle choreography** — place circles, rectangles, and freeform polygons, sequenced on a looping timeline.
+- **Model tabs** — switch between the river and the coast from the top of the sidebar. Each keeps its own scene in your browser, so coming back finds it as you left it.
 - **OpenFOAM export** — builds a full case (`blockMeshDict`, `snappyHexMeshDict`, boundary + initial fields, obstacle and bed STLs) and downloads it as a ZIP.
 
 ## How it is built
@@ -49,7 +50,7 @@ node dev/headless_harness.js index.html    # exit 0 = pass
 The harness loads the three files the way a browser does, with p5 and the DOM mocked, and
 checks behaviour: the draw loop runs, sediment moves, the bed editor works through the real
 mouse handlers, the model and site extension points are used, the river responds to friction
-and to the bed, and the exporter builds a case from the drawn scene. 55 checks. `AGENTS.md`
+and to the bed, and the exporter builds a case from the drawn scene. 64 checks. `AGENTS.md`
 describes the layers and the testing rules.
 
 ## Domain
