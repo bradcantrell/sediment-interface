@@ -809,21 +809,27 @@ try {
   {
     const tabs = app.run("SITE_TABS"), mid = app.run("model.id"), bar = el("site-tabs");
     app.run("mountTabs()");
-    const mine = tabs.find(t => t.model === mid);
-    const links = tabs.filter(t => t !== mine).every(t => bar.innerHTML.includes(`<a class="tab" data-tab="${t.id}" href="${t.url}">`));
+    // A site that names its own tab through its backend (the bridge) is on that tab, not on
+    // its model's; every listed tab it is not on is then a link.
+    const ownTab = app.run("(backends.find(b => b.tab && b.tab.id) || {}).tab || null");
+    const listed = tabs.find(t => t.model === mid);
+    const mine = ownTab ? { id: ownTab.id } : listed;
+    const links = tabs.filter(t => !mine || t.id !== mine.id).every(t => bar.innerHTML.includes(`<a class="tab" data-tab="${t.id}" href="${t.url}">`));
     const cur = !mine || bar.innerHTML.includes(`<span class="tab tab-on" data-tab="${mine.id}">`);
     const ids = new Set(tabs.map(t => t.id)), models = new Set(tabs.map(t => t.model));
     check(tabs.length >= 2 && ids.size === tabs.length && models.size === tabs.length && links && cur && tabs.every(t => /^https:\/\//.test(t.url)),
           "the tab bar lists every model once, marks this page's and links the others",
-          `${tabs.map(t => t.id).join(", ")}; this page: ${mine ? mine.id : "not listed (model " + mid + ")"}`);
+          `${tabs.map(t => t.id).join(", ")}; this page: ${mine ? mine.id + (ownTab ? " (named by its backend)" : "") : "not listed (model " + mid + ")"}`);
 
     const k0 = key();
     app.run("saveScene()");
+    // The site's own tab, if it has one, steps aside so the probe's tab is the one in force.
+    app.run("globalThis.__ownB = backends.find(b => b.tab && b.tab.id) || null; if (globalThis.__ownB) { globalThis.__ownT = globalThis.__ownB.tab; globalThis.__ownB.tab = null; }");
     app.run("registerBackend({ id: '__tab', tab: { id: '__here', label: 'here' } })");
     const k1 = key(), seen = app.run("readSavedScene()");
     const own = bar.innerHTML.includes('<span class="tab tab-on" data-tab="__here">here</span>') &&
                 tabs.every(t => bar.innerHTML.includes(`data-tab="${t.id}" href="${t.url}"`));
-    app.run("backends.splice(backends.findIndex(b => b.id === '__tab'), 1); mountTabs()");
+    app.run("backends.splice(backends.findIndex(b => b.id === '__tab'), 1); if (globalThis.__ownB) globalThis.__ownB.tab = globalThis.__ownT; mountTabs()");
     check(k1 !== k0 && seen === null && own && key() === k0 && app.run("readSavedScene()") !== null,
           "a site names its own tab through its backend, and a scene saved under one tab is not seen under another",
           `keys ${k0} / ${k1}`);
