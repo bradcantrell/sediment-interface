@@ -749,6 +749,10 @@
       add('README.md', readmeMd(false));
     }
 
+    // One command that runs the case, and the scene itself so the interface can open it again.
+    add('Allrun', allrunSh());
+    if (typeof state.sceneText === 'string' && state.sceneText) add('scene.json', state.sceneText);
+
     return {
       files: files,
       meta: {
@@ -998,13 +1002,42 @@
 
 
 
+  // The three steps of the README as one script. A ZIP made in the browser carries no
+  // executable bit, so the README runs it through sh.
+  function allrunSh() {
+    return '#!/bin/sh\n' +
+      '# Runs this case from start to finish with OpenFOAM 14:  sh Allrun\n' +
+      'cd "$(dirname "$0")" || exit 1\n' +
+      'if ! command -v foamRun >/dev/null 2>&1; then\n' +
+      '  echo "OpenFOAM 14 is not set up in this shell. Load it first, for example:" >&2\n' +
+      '  echo "  . /opt/openfoam14/etc/bashrc" >&2\n' +
+      '  exit 1\n' +
+      'fi\n' +
+      'step() {\n' +
+      '  echo "$1 ..."\n' +
+      '  if ! "$@" > "log.$1" 2>&1; then echo "$1 failed, see log.$1" >&2; exit 1; fi\n' +
+      '}\n' +
+      'step blockMesh\n' +
+      'step snappyHexMesh -overwrite\n' +
+      'step foamRun -solver incompressibleFluid\n' +
+      'echo "done. Open the result with:  paraFoam   (or paraview, after: touch case.foam)"\n';
+  }
+
   function readmeMd(hasBed) {
     let md = '# Sediment Interface \u2192 OpenFOAM case\n\n';
     md += '## Run (OpenFOAM 14)\n\n';
+    md += 'Unpack the ZIP, load OpenFOAM 14 in a shell, and from this folder run\n\n';
+    md += '    sh Allrun\n\n';
+    md += 'which runs these three steps and writes a log for each:\n\n';
     md += '    blockMesh\n';
     md += '    snappyHexMesh -overwrite     # carves obstacles + bed from triSurface STLs\n';
     md += '    foamRun -solver incompressibleFluid\n\n';
+    md += '## Open the scene again\n\n';
+    md += 'scene.json is the drawing this case was made from. In the Sediment Interface, on the\n';
+    md += 'river tab, press "open" and pick scene.json or the ZIP itself.\n\n';
     md += '## Files\n\n';
+    md += '    Allrun     - runs the three steps above\n';
+    md += '    scene.json - the scene, for the interface\n';
     md += '    system/    - controlDict, fvSchemes, fvSolution, blockMeshDict, snappyHexMeshDict\n';
     md += '    constant/  - transportProperties, turbulenceProperties, momentumTransport, triSurface/ (obstacle + bed STLs)\n';
     md += '    0/         - U, p, k, epsilon, nut initial/boundary fields\n';

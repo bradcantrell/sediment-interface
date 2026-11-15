@@ -13,7 +13,8 @@ module.exports = function ({ app, S, check, ROOT }) {
   app.setObstacles([{ type: "circle", x: 300, y: 200, w: 50, h: 50, size: 50, rotation: 0, clips: [{ start: 0, dur: Infinity }] },
                     { type: "rect", x: 600, y: 300, w: 80, h: 30, size: 80, rotation: 20, clips: [{ start: 0, dur: Infinity }] }]);
   let out = null, threw = null;
-  try { out = gen.generateCase(app.run("sceneState()")); } catch (e) { threw = e; }
+  // As the export button does it: the scene travels in the case as scene.json.
+  try { out = gen.generateCase(app.run("exportCaseState()")); } catch (e) { threw = e; }
   const paths = out ? out.files.map(f => f.path) : [];
   check(!threw && out.meta.nObstacles === 2 && out.meta.hasBed === (S().bedPoints.length >= 2) &&
         paths.some(p => /blockMeshDict$/.test(p)) && paths.some(p => /snappyHexMeshDict$/.test(p)),
@@ -22,7 +23,7 @@ module.exports = function ({ app, S, check, ROOT }) {
   // The steps shown after an export must not name a file the case does not contain. They
   // once told the user to run apply_bed.py, which was never in the case.
   if (out) {
-    const named = (hint) => (hint.match(/[\w.\/-]+\.(?:py|sh|stl)\b/g) || []);
+    const named = (hint) => (hint.match(/[\w.\/-]+\.(?:py|sh|stl|json)\b|\bAllrun\b/g) || []);
     const missing = [];
     for (const hasBed of [false, true]) {
       const hint = app.run(`exportRunHint({ hasBed: ${hasBed} })`);
@@ -36,6 +37,22 @@ module.exports = function ({ app, S, check, ROOT }) {
     check(missing.length === 0 && /snappyHexMesh/.test(hintBed) && /foamRun/.test(hintBed),
           "the steps shown after an export name only files the case contains",
           missing.length ? `not in the case: ${missing.join(", ")}` : hintBed);
+  }
+  // What the export button packs: the case, one script that runs it, and the scene itself.
+  // The scene in the ZIP must be one the interface opens again.
+  {
+    const packed = gen.generateCase(app.run("exportCaseState()"));
+    const zipBytes = gen.buildZip(packed.files);
+    const found = app.run("findSceneInZip")(new Uint8Array(zipBytes));
+    const text = found && found.method === 0 ? Buffer.from(found.data).toString() : "";
+    const opens = text ? app.run("checkSceneText")(text) : { ok: false, why: "no scene.json in the ZIP" };
+    const allrun = (packed.files.find(f => f.path === "Allrun") || {}).content || "";
+    const readme = (packed.files.find(f => f.path === "README.md") || {}).content || "";
+    const steps = ["blockMesh", "snappyHexMesh -overwrite", "foamRun -solver incompressibleFluid"];
+    check(opens.ok && opens.scene.obstacles.length === 2 && steps.every(x => allrun.includes("step " + x) && readme.includes(x)) &&
+          /sh Allrun/.test(readme) && /scene\.json/.test(readme),
+          "the exported ZIP holds a run script with the README's steps and a scene the interface opens again",
+          opens.ok ? `scene.json ${text.length} bytes, ${opens.scene.obstacles.length} obstacles; Allrun ${allrun.split("\n").length - 1} lines` : opens.why);
   }
   app.setObstacles([]);
   app.run("solidMaskDirty = true");

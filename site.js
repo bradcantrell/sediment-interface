@@ -46,8 +46,17 @@ function decodePngToHeights(dataUrl) {
 // This used to tell the user to run `python3 apply_bed.py` when a bed was exported. The case
 // has never contained that file.
 function exportRunHint(meta) {
-  return 'run: blockMesh → snappyHexMesh -overwrite → foamRun -solver incompressibleFluid' +
-         (meta && meta.hasBed ? ' (the bed is carved from bed.stl)' : '');
+  return 'run: sh Allrun (blockMesh → snappyHexMesh -overwrite → foamRun -solver incompressibleFluid)' +
+         (meta && meta.hasBed ? ', the bed is carved from bed.stl' : '') +
+         '. "open" reads scene.json or the ZIP back in.';
+}
+
+// What the case generator is given: the drawn scene, and the scene file that is packed
+// beside the case as scene.json so the interface can open it again.
+function exportCaseState() {
+  const state = sceneState();
+  state.sceneText = sceneFileText();
+  return state;
 }
 
 async function exportToOpenFOAM() {
@@ -62,7 +71,7 @@ async function exportToOpenFOAM() {
     let heightsPng = null;
     try { heightsPng = await decodePngToHeights(depoBuffer.elt.toDataURL('image/png')); }
     catch (e) { heightsPng = null; }
-    const state = sceneState();
+    const state = exportCaseState();
     state.heightsPng = heightsPng;
     const { files, meta } = SedimentCaseGenerator.generateCase(state);
     const zipBytes = SedimentCaseGenerator.buildZip(files);

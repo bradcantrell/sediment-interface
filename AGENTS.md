@@ -82,6 +82,12 @@ Both live in `index.html`, so every site gets them through the sync.
   `new` button in the tab row forgets the scene and reloads. Both public sites are on the
   same origin (`bradcantrell.github.io`) and share one storage quota, which is why the key
   carries the tab id and why grids are not saved.
+- **The scene as a file.** `sceneFileText()` is the same scene as JSON. A site packs it in
+  its exported case as `scene.json`, and the `open` button in the tab row reads it back from
+  that file or from the ZIP itself (`findSceneInZip`: stored, or deflated in a folder after
+  a re-zip). Opening files it as this tab's saved scene and reloads, so it comes in by the
+  same road as a scene left on the last visit. A scene from another tab is refused. So an
+  exported ZIP does two things: the solver case runs the scene, `scene.json` restores it.
 - A new sidebar control is saved without any work **if it is an `input` or `select` with an
   id**. State kept only in a variable (a toggle button) is not; add it to `captureScene()`
   and `applySavedScene()` with a check, or to a model hook when models need one.
@@ -117,7 +123,7 @@ and the simulation was dead along with every listener attached after the throw.
 
 The harness loads the page the way a browser does (inline script, then `model.js`, then
 `site.js`, one scope), mocks p5 and the DOM, and asserts on model state rather than pixels.
-64 checks:
+68 checks:
 
 - **Interface** (`dev/headless_harness.js`, 48): `setup()` completes, the draw loop advances
   time, sediment moves, a transect edits the bed, every visible strip is clickable, the bed

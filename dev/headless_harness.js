@@ -846,6 +846,63 @@ try {
     app.run("sceneSaveArmed = true");
   }
 
+  // The scene as a file: what sceneFileText() writes opens again through the same road as
+  // a scene left on the last visit; a scene from another tab or a damaged file changes nothing.
+  {
+    // The file differs from the scene on screen, so a save on the way out would show.
+    const live = JSON.parse(app.run("sceneFileText()"));
+    live.view.thumbAngleX = (live.view.thumbAngleX || 0) + 7;
+    const text = JSON.stringify(live), n0 = global.__reloads;
+    global.__store.clear();
+    const r = app.run("openSceneText")(text);
+    const filed = global.__store.get(key());
+    for (const fn of global.__pagehide) fn();        // leaving for the reload must not save over it
+    const kept = global.__store.get(key()) === filed;
+    const back = app.run("readSavedScene()");
+    check(r.ok && !!filed && kept && global.__reloads === n0 + 1 && back && JSON.stringify(back) === JSON.stringify(JSON.parse(text)),
+          "a scene file opens as this tab's saved scene and the page loads again",
+          `${text.length} bytes, ok ${r.ok}, filed ${!!filed}, kept through pagehide ${kept}, ${global.__reloads - n0} reload(s)`);
+    app.run("sceneSaveArmed = true");
+
+    const n1 = global.__reloads, before = global.__store.get(key());
+    const other = JSON.stringify(Object.assign(JSON.parse(text), { tab: "__elsewhere" }));
+    const bads = { "another tab's scene": other, "not JSON": "PK{{", "an unknown version": JSON.stringify(Object.assign(JSON.parse(text), { v: 99 })) };
+    const res = Object.keys(bads).map(name => { const q = app.run("openSceneText")(bads[name]); return name + ": " + (q.ok ? "OPENED" : q.why); });
+    check(res.every(x => !/OPENED/.test(x)) && /__elsewhere tab/.test(res[0]) && global.__reloads === n1 && global.__store.get(key()) === before,
+          "a scene from another tab, or a file that is not a scene, is refused and nothing changes", res.join("; "));
+  }
+
+  // scene.json is found inside a ZIP: stored at the top (as the sites write it) and deflated
+  // inside a folder (a case unpacked and zipped again). A ZIP without one gives null.
+  {
+    const zlib = require("zlib");
+    const zip = (entries) => {
+      const parts = [], cds = []; let off = 0;
+      for (const en of entries) {
+        const name = Buffer.from(en.name), raw = Buffer.from(en.text);
+        const data = en.deflate ? zlib.deflateRawSync(raw) : raw;
+        const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(en.deflate ? 8 : 0, 8);
+        lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(raw.length, 22); lh.writeUInt16LE(name.length, 26);
+        const cd = Buffer.alloc(46); cd.writeUInt32LE(0x02014b50, 0); cd.writeUInt16LE(en.deflate ? 8 : 0, 10);
+        cd.writeUInt32LE(data.length, 20); cd.writeUInt32LE(raw.length, 24); cd.writeUInt16LE(name.length, 28); cd.writeUInt32LE(off, 42);
+        parts.push(lh, name, data); cds.push(cd, name); off += 30 + name.length + data.length;
+      }
+      const cdBuf = Buffer.concat(cds), eo = Buffer.alloc(22);
+      eo.writeUInt32LE(0x06054b50, 0); eo.writeUInt16LE(entries.length, 8); eo.writeUInt16LE(entries.length, 10);
+      eo.writeUInt32LE(cdBuf.length, 12); eo.writeUInt32LE(off, 16);
+      return new Uint8Array(Buffer.concat([...parts, cdBuf, eo]));
+    };
+    const text = app.run("sceneFileText()"), find = app.run("findSceneInZip");
+    const a = find(zip([{ name: "params.txt", text: "x = 1\n" }, { name: "scene.json", text }]));
+    const b = find(zip([{ name: "case/README.md", text: "hello" }, { name: "case/scene.json", text, deflate: true }]));
+    const c = find(zip([{ name: "params.txt", text: "x = 1\n" }, { name: "myscene.json", text }]));
+    const okA = !!a && a.method === 0 && Buffer.from(a.data).toString() === text;
+    const okB = !!b && b.method === 8 && zlib.inflateRawSync(Buffer.from(b.data)).toString() === text;
+    check(okA && okB && c === null && find(new Uint8Array([0x50, 0x4b, 3, 4, 0, 0])) === null,
+          "scene.json is found inside an exported ZIP, stored or deflated, and nowhere else",
+          `stored at the top: ${okA}; deflated in a folder: ${okB}; a ZIP without one: ${c === null ? "null" : "FOUND"}`);
+  }
+
   // Put the scene back the way section 9 left it.
   app.setObstacles([]); app.setBedPoints(bed0); globalThis.__xs = xs0;
   app.run("bedXSections = globalThis.__xs; solidMaskDirty = true; showFlow = " + flow0);

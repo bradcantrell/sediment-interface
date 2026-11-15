@@ -126,11 +126,14 @@
       color: rgba(255,200,100,0.8); border-color: rgba(255,200,100,0.4);
       background: rgba(255,200,100,0.08); cursor: default;
     }
+    #scene-msg { font-size: 9px; color: #f66; line-height: 1.4; }
+    #scene-msg:empty { display: none; }
   </style>
 </head>
 <body>
 <div id="sidebar">
     <div id="site-tabs"></div>
+    <div id="scene-msg"></div>
     <div id="sidebar-stats" style="font-size:10px;color:rgba(255,255,255,0.4);line-height:1.6;margin-bottom:4px;">
       sim-time: <span class="hv" id="simtime">0.0</span>s &nbsp; mobile: <span class="hv" id="mobile">0</span><br>
       deposited: <span class="hv" id="deposited">0</span> &nbsp; obstacles: <span class="hv" id="obstacles">0</span><br>
@@ -2225,9 +2228,12 @@ function mountTabs() {
   bar.innerHTML = siteTabs().map(t => t.current
     ? '<span class="tab tab-on" data-tab="' + esc(t.id) + '">' + esc(t.label) + '</span>'
     : '<a class="tab" data-tab="' + esc(t.id) + '" href="' + esc(t.url) + '">' + esc(t.label) + '</a>').join('') +
+    '<button class="reset-btn" id="open-scene" title="open a scene from an exported case: its scene.json, or the ZIP itself">open</button>' +
     '<button class="reset-btn" id="reset-scene" title="forget the saved scene and start this model fresh">new</button>';
   const rb = document.getElementById('reset-scene');
   if (rb) rb.addEventListener('click', resetSavedScene);
+  const ob = document.getElementById('open-scene');
+  if (ob) ob.addEventListener('click', pickSceneFile);
 }
 
 // ─────────────────────────────────────────────
@@ -2375,6 +2381,108 @@ function applySavedControls(saved) {
   }
   for (const e of selects) e.value = saved[e.id];
   for (const e of list) restoredControls.add(e.id);
+}
+
+// ─────────────────────────────────────────────
+// THE SCENE AS A FILE
+// ─────────────────────────────────────────────
+// The scene that is kept in the browser can also travel as a file. A site puts
+// sceneFileText() in the case it exports, as scene.json, and the "open" button reads it
+// back from that file or straight from the exported ZIP, on any machine. The solver case
+// in the ZIP runs the scene; scene.json puts the drawing back in this interface.
+// A scene opens only on the tab it was saved on.
+const SCENE_FILE_NAME = 'scene.json';
+
+function sceneFileText() { return JSON.stringify(captureScene(), null, 1) + '\n'; }
+
+// The scene in a file's text, or why it cannot be used on this page. Changes nothing.
+function checkSceneText(text) {
+  let s = null;
+  try { s = JSON.parse(text); } catch (e) { return { ok: false, why: 'that is not a scene file' }; }
+  if (!sceneIsValid(s)) return { ok: false, why: 'that is not a scene file this page can read' };
+  if (s.tab !== currentTabId()) return { ok: false, why: 'that scene belongs to the ' + (s.tab || 'another') + ' tab' };
+  return { ok: true, scene: s };
+}
+
+// Open a scene: file it as this tab's saved scene and load the page again, so it comes in
+// by the same road as a scene left on the last visit and the run starts fresh. Where the
+// browser keeps no storage it is applied in place.
+function openSceneText(text) {
+  const r = checkSceneText(text);
+  if (!r.ok) return r;
+  const store = sceneStore();
+  let filed = false;
+  try { if (store) { store.setItem(savedSceneKey(), JSON.stringify(r.scene)); filed = true; } } catch (e) {}
+  if (filed && window.location && typeof window.location.reload === 'function') {
+    sceneSaveArmed = false;          // or leaving the page would save the old scene over it
+    window.location.reload();
+  } else {
+    applySavedScene(r.scene);
+  }
+  return { ok: true };
+}
+
+// scene.json inside a ZIP: { method, data } with the entry's bytes as they lie in the
+// archive, or null. Read from the central directory, so it finds the file in the ZIP this
+// site wrote (stored) and in a case that was unpacked and zipped again (deflated, possibly
+// inside a folder).
+function findSceneInZip(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let e = -1;
+  for (let i = bytes.length - 22; i >= 0 && i >= bytes.length - 65557; i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { e = i; break; }
+  }
+  if (e < 0) return null;
+  const n = dv.getUint16(e + 10, true), dec = new TextDecoder();
+  let p = dv.getUint32(e + 16, true);
+  for (let k = 0; k < n && p + 46 <= bytes.length; k++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) return null;
+    const method = dv.getUint16(p + 10, true), size = dv.getUint32(p + 20, true);
+    const nl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true);
+    const at = dv.getUint32(p + 42, true);
+    const name = dec.decode(bytes.subarray(p + 46, p + 46 + nl));
+    if (name === SCENE_FILE_NAME || name.endsWith('/' + SCENE_FILE_NAME)) {
+      if (at + 30 > bytes.length) return null;
+      const start = at + 30 + dv.getUint16(at + 26, true) + dv.getUint16(at + 28, true);
+      if (start + size > bytes.length) return null;
+      return { method, data: bytes.subarray(start, start + size) };
+    }
+    p += 46 + nl + xl + cl;
+  }
+  return null;
+}
+
+// The scene text in a picked file: a scene.json as it is, or the one inside a ZIP. null if
+// the ZIP holds none or packs it in a way this page cannot unpack.
+async function sceneTextFromFile(bytes) {
+  if (!(bytes.length > 3 && bytes[0] === 0x50 && bytes[1] === 0x4b)) return new TextDecoder().decode(bytes);
+  const f = findSceneInZip(bytes);
+  if (!f) return null;
+  if (f.method === 0) return new TextDecoder().decode(f.data);
+  if (f.method === 8 && typeof DecompressionStream === 'function') {
+    return await new Response(new Blob([f.data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
+  }
+  return null;
+}
+
+function sceneMessage(t) { const m = document.getElementById('scene-msg'); if (m) m.textContent = t; }
+
+// The "open" button: pick a file, open the scene in it, or say why not.
+function pickSceneFile() {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = '.json,.zip,application/json,application/zip';
+  inp.addEventListener('change', async () => {
+    const f = inp.files && inp.files[0];
+    if (!f) return;
+    let r;
+    try {
+      const text = await sceneTextFromFile(new Uint8Array(await f.arrayBuffer()));
+      r = (text == null) ? { ok: false, why: 'there is no scene.json in that file' } : openSceneText(text);
+    } catch (e) { r = { ok: false, why: 'that file could not be read' }; }
+    sceneMessage(r.ok ? '' : 'not opened: ' + r.why);
+  });
+  inp.click();
 }
 
 </script>
