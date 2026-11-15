@@ -31,6 +31,10 @@
 //                                     round-trips (obstacles, clips, bed, controls through
 //                                     their own listeners), stretches to another canvas size,
 //                                     is filed per tab, and a damaged one is thrown away
+//  9c. the guide and the key list  — the guide's steps (the model's and the site's placed
+//                                     after the step each names), its ways in and out, that
+//                                     it holds keys and clicks, and the key list showing only
+//                                     while the run is stopped
 //  10. the site's own checks        — dev/site_checks.js, if there is one
 //  11. nothing has gone non-finite
 //
@@ -909,6 +913,64 @@ try {
   setCtl("trail-fade", DEFAULTS["trail-fade"]);
   app.rebuildUserBedGrid(); app.updateBedBuffer();
   global.__store.clear();
+}
+
+// ---------------------------------------------------------------- 9c. the guide and the key list
+{
+  // The steps: the interface's own in their order, each complete, ids unique, and every step
+  // the model or a backend adds placed after the step it names.
+  const steps = app.run("guideSteps()"), ids = steps.map(s => s.id), shared = app.run("GUIDE_STEPS.map(s => s.id)");
+  const inOrder = shared.every((id, k) => ids.includes(id) && (k === 0 || ids.indexOf(id) > ids.indexOf(shared[k - 1])));
+  const complete = steps.every(s => s.id && s.title && s.text) && new Set(ids).size === ids.length;
+  // Directly after the step it names, or after earlier steps added after that same step.
+  const added = steps.filter(s => s.from), placed = added.every(s => {
+    let k = ids.indexOf(s.id) - 1;
+    while (k >= 0 && steps[k].from && steps[k].after === s.after) k--;
+    return k >= 0 && steps[k].id === s.after;
+  });
+  check(inOrder && complete && placed && steps.orphans.length === 0,
+        "the guide has the interface's steps in order, each complete, and every added step after the one it names",
+        `${steps.length} steps, ${added.length} added (${[...new Set(added.map(s => s.from))].join(", ") || "none"})` +
+        (steps.orphans.length ? `, orphans ${steps.orphans.join(", ")}` : ""));
+
+  // Opening runs the model and holds every key and click, and each way out closes it and puts
+  // the pause back.
+  const el = (id) => app.run(`document.getElementById('${id}')`);
+  const n0 = S().obstacles.length, grid0 = app.run("showGrid");
+  app.setPaused(true);
+  el("guide-btn").dispatchEvent({ type: "click" });
+  const opened = app.run("guide.open") === true && S().paused === false;
+  globalThis.key = "g"; app.keyPressed();
+  globalThis.mouseX = 400; globalThis.mouseY = 300; app.run("mousePressed")({});
+  const held = app.run("showGrid") === grid0 && S().obstacles.length === n0;
+  app.run("guideKey({ key: 'Escape', preventDefault() {}, stopPropagation() {} })");
+  const escClosed = app.run("guide.open") === false && S().paused === true;
+  app.run("guideKey({ key: '?', target: { tagName: 'DIV' }, preventDefault() {} })");
+  const qOpened = app.run("guide.open") === true;
+  el("guide-x").dispatchEvent({ type: "click" });
+  const xClosed = app.run("guide.open") === false;
+  app.run("guideKey({ key: '?', target: { tagName: 'INPUT' }, preventDefault() {} })");
+  const fieldIgnored = app.run("guide.open") === false;
+  el("guide-btn").dispatchEvent({ type: "click" }); app.run("guideGo(guide.steps.length - 1)");
+  el("guide-next").dispatchEvent({ type: "click" });
+  const doneClosed = app.run("guide.open") === false && S().paused === true;
+  el("guide-btn").dispatchEvent({ type: "click" }); el("guide-btn").dispatchEvent({ type: "click" });
+  const btnToggles = app.run("guide.open") === false;
+  check(opened && held && escClosed && qOpened && xClosed && fieldIgnored && doneClosed && btnToggles,
+        "the guide opens from its button and ?, runs the model, holds keys and clicks, and closes from ✕, Esc, done and the button",
+        `open ${opened}, held ${held}, Esc ${escClosed}, ? ${qOpened}, ✕ ${xClosed}, ? in a field ignored ${fieldIgnored}, done ${doneClosed}, button ${btnToggles}`);
+
+  // The key list: out of the way while the run goes, back when it stops, hidden by H, and
+  // shown by the guide on the step about it.
+  const op = () => { app.run("updateHUD()"); return el("help").style.opacity; };
+  app.run("showHelp = true"); app.setPaused(false); const running = op();
+  app.setPaused(true); const stopped = op();
+  app.run("showHelp = false"); const hidden = op(); app.run("showHelp = true");
+  el("guide-btn").dispatchEvent({ type: "click" }); app.run("guideGo(guide.steps.findIndex(s => s.id === 'keys'))");
+  const onStep = op(); app.run("guideClose()"); app.setPaused(true);
+  check(running === "0" && stopped === "1" && hidden === "0" && onStep === "1",
+        "the key list hides while the run goes, shows when it stops, hides with H, and shows on the guide's step about it",
+        `running ${running}, stopped ${stopped}, H ${hidden}, guide step ${onStep}`);
 }
 
 // ---------------------------------------------------------------- 10. the site's own checks

@@ -32,6 +32,8 @@ here.
 
 Fully static. Open `index.html` directly in a browser, or serve it from any static host (GitHub Pages, Netlify, `python -m http.server`, etc.). No build step, no backend.
 
+New to it? Press **? guide** in the bottom left corner, or the `?` key, for a walkthrough that lights up each part of the screen and explains it. The key list along the bottom shows whenever the run is paused.
+
 ## Running an exported case (OpenFOAM 14)
 
 Unzip the exported `sediment-openfoam-case.zip`, then:
@@ -51,7 +53,7 @@ node dev/headless_harness.js index.html    # exit 0 = pass
 The harness loads the three files the way a browser does, with p5 and the DOM mocked, and
 checks behaviour: the draw loop runs, sediment moves, the bed editor works through the real
 mouse handlers, the model and site extension points are used, the river responds to friction
-and to the bed, and the exporter builds a case from the drawn scene. 68 checks. `AGENTS.md`
+and to the bed, and the exporter builds a case from the drawn scene. 71 checks. `AGENTS.md`
 describes the layers and the testing rules.
 
 ## Domain

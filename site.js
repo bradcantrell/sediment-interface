@@ -93,6 +93,12 @@ async function exportToOpenFOAM() {
 registerBackend({
   id: 'export',
   title: 'Sediment Interface',
+  // This site's step in the interface's guide (see THE GUIDE in index.html).
+  guide: [
+    { id: 'export', target: ['#export-btn', '#export-result'], title: 'Export', text:
+      `<p><b>EXPORT CASE</b> writes this scene as a case for OpenFOAM, a full engineering flow solver, and downloads it as a ZIP. Inside are the setup files, an Allrun script that runs the whole case, and scene.json, which is this scene.</p>
+       <p>This is how a sketch here becomes a proper simulation. It was tested on OpenFOAM 14, and it runs there as it is. The <b>open</b> button at the top reads the ZIP back in, so the scene can always be recovered from the case.</p>` },
+  ],
   mount(slot) {
     slot.innerHTML =
       '<button id="export-btn">⬇ EXPORT CASE</button>' +

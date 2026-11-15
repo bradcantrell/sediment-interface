@@ -99,12 +99,63 @@
     .hv { color: rgba(255,200,100,0.75); }
     .hw { color: rgba(255,120,80,0.75); }
 
+    /* The key list. Readable while the run is stopped, out of the way while it runs: it fades
+       out slowly when the run starts and comes back quickly when it stops (see updateHUD). */
     #help {
-      position: fixed; bottom: 8px; left: 50%; transform: translateX(-50%);
-      font-size: 10px; color: rgba(255,255,255,0.25);
+      position: fixed; bottom: 10px; left: calc((100vw - 270px) / 2); transform: translateX(-50%);
+      width: max-content; max-width: calc(100vw - 270px - 240px);   /* clear of the guide button */
+      font-size: 12px; line-height: 1.6; color: rgba(255,255,255,0.78);
+      background: rgba(8,8,16,0.6); padding: 3px 10px; border-radius: 3px;
+      text-shadow: 0 1px 3px #000, 0 0 8px #000;
       pointer-events: none; user-select: none; z-index: 10;
-      text-align: center; transition: opacity 0.3s;
+      text-align: center; transition: opacity 0.35s;
     }
+    #help.fading { transition: opacity 1.6s; }
+
+    /* THE GUIDE: a walkthrough that lights up one part of the page at a time (see THE GUIDE). */
+    #guide-btn {
+      position: fixed; left: 12px; bottom: 10px; z-index: 1001;
+      font: 11px 'Courier New', monospace; letter-spacing: 0.5px; cursor: pointer;
+      padding: 5px 11px; border-radius: 14px; border: 1px solid rgba(255,200,100,0.45);
+      background: rgba(12,12,24,0.92); color: rgba(255,200,100,0.85);
+      transition: bottom 0.2s, background 0.15s;
+    }
+    #guide-btn:hover { background: rgba(255,200,100,0.12); }
+    #guide-btn.on { background: rgba(255,200,100,0.85); color: #0c0c18; }
+    #guide { position: fixed; inset: 0; z-index: 1000; display: none; }
+    #guide.open { display: block; }
+    #guide-spot {
+      position: fixed; pointer-events: none; border: 2px solid rgba(255,200,100,0.85); border-radius: 5px;
+      box-shadow: 0 0 0 200vmax rgba(4,4,10,0.72), 0 0 16px rgba(255,200,100,0.35);
+      transition: left 0.3s, top 0.3s, width 0.3s, height 0.3s;
+    }
+    #guide-spot.none { left: 50%; top: 50%; width: 0; height: 0; border: 0; box-shadow: 0 0 0 200vmax rgba(4,4,10,0.72); }
+    #guide-card {
+      position: fixed; width: min(340px, calc(100vw - 24px)); box-sizing: border-box;
+      background: #10101e; border: 1px solid rgba(255,200,100,0.55); border-radius: 5px;
+      padding: 14px 16px 12px; color: rgba(255,255,255,0.86);
+      font: 12px/1.6 'Courier New', monospace; box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+      transition: left 0.3s, top 0.3s;
+    }
+    #guide-title {
+      font-size: 10px; letter-spacing: 2px; text-transform: uppercase; font-weight: bold;
+      color: rgba(255,200,100,0.9); margin: 0 26px 8px 0;
+    }
+    #guide-text p { margin: 0 0 8px 0; }
+    #guide-text b { color: rgba(255,200,100,0.9); font-weight: normal; }
+    #guide-x {
+      position: absolute; top: 6px; right: 6px; border: 0; background: none; cursor: pointer;
+      color: rgba(255,255,255,0.45); font-size: 15px; line-height: 1; padding: 4px 6px;
+    }
+    #guide-x:hover { color: #fff; }
+    #guide-nav { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+    #guide-count { flex: 1; font-size: 10px; color: rgba(255,255,255,0.4); }
+    #guide-nav button {
+      font: 11px 'Courier New', monospace; cursor: pointer; padding: 3px 9px; border-radius: 2px;
+      background: none; color: rgba(255,255,255,0.75); border: 1px solid rgba(255,255,255,0.2);
+    }
+    #guide-nav button:hover { border-color: rgba(255,200,100,0.6); color: rgba(255,200,100,0.9); }
+    #guide-nav button:disabled { opacity: 0.3; cursor: default; }
 
     /* Whatever a site's backend mounts into #site-slot (see SITE EXTENSION POINT). */
     #site-slot button { width: 100%; margin-bottom: 4px; }
@@ -188,7 +239,17 @@
 
 <div id="timeline-bar"><canvas id="timeline-canvas"></canvas></div>
 
-<div id="help" style="position:fixed;bottom:8px;left:50%;transform:translateX(-50%);font-size:10px;color:rgba(255,255,255,0.2);pointer-events:none;z-index:5;text-align:center;">1 circle &middot; 2 rect &middot; 3 freeform &middot; click place &middot; drag move &middot; drag handle resize &middot; wheel rotate &middot; [ ] size &middot; backspace delete &middot; F flow &middot; G grid &middot; H help &middot; M bed &middot; space pause &middot; S save<span id="help-site"></span></div>
+<button id="guide-btn" title="walk through the interface (?)" aria-expanded="false">? guide</button>
+<div id="guide" role="dialog" aria-modal="true" aria-labelledby="guide-title">
+  <div id="guide-spot"></div>
+  <div id="guide-card">
+    <button id="guide-x" title="close the guide (Esc)" aria-label="close the guide">&#x2715;</button>
+    <div id="guide-title"></div><div id="guide-text"></div>
+    <div id="guide-nav"><span id="guide-count"></span><button id="guide-prev">&#9664; back</button><button id="guide-next">next &#9654;</button></div>
+  </div>
+</div>
+
+<div id="help">1 circle &middot; 2 rect &middot; 3 freeform &middot; click place &middot; drag move &middot; drag handle resize &middot; wheel rotate &middot; [ ] size &middot; backspace delete &middot; F flow &middot; G grid &middot; H help &middot; M bed &middot; space pause &middot; S save &middot; ? guide<span id="help-site"></span></div>
 
 <script>
 // ─────────────────────────────────────────────
@@ -1222,7 +1283,10 @@ function updateHUD() {
   document.getElementById('shape').textContent=ghostType;
   document.getElementById('rot').textContent=fmt(ghostRotation%360);
   document.getElementById('paused').textContent=paused?(bedMode?'🖉 BED MODE ('+bedPoints.length+' pts)':'⏸ PAUSED'):'';
-  document.getElementById('help').style.opacity=showHelp?'1':'0';
+  const helpEl=document.getElementById('help'), helpOn=helpVisible();
+  helpEl.style.opacity=helpOn?'1':'0'; helpEl.classList.toggle('fading', !helpOn);
+  const gb=document.getElementById('guide-btn'); if (gb) gb.style.bottom=bedMode?(BED_CHART_H+14)+'px':'10px';   // clear of the bed editor's strip
+  if (guide.open) guidePlace();      // follows the target if the sidebar's content moves it
   if (model.hud) model.hud();
 }
 
@@ -1332,6 +1396,7 @@ function setup() {
   // page scrolling, and the target guard leaves real form controls alone.
   window.addEventListener('keydown', function(e){
     if (e.code !== 'Space' && e.key !== ' ') return;
+    if (guide.open) return;
     let t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
     e.preventDefault();
@@ -1348,6 +1413,7 @@ function setup() {
   document.getElementById('toggle-pause').addEventListener('click',function(){paused=!paused;updateToggles();this.blur();});
   document.getElementById('toggle-elev').addEventListener('click',function(){elevMode=(elevMode+1)%5;showElev=elevMode>0;updateToggles();});
   updateToggles();
+  guide.refreshToggles = updateToggles;   // the guide starts and stops the run, so it redraws these too
 
   // Reset buttons
   document.getElementById('reset-render').addEventListener('click',function(){
@@ -1395,6 +1461,7 @@ function setup() {
   else for (let k=0; k<80; k++) { simTime+=DT; buildSolidMask(); model.step(); }
   initParticles();
   mountBackends();
+  mountGuide();
   if (saved) applySavedControls(saved.controls);   // the site's own controls exist only now
   // Leaving the page (another tab, a reload, closing it) saves the scene.
   window.addEventListener('pagehide', saveScene);
@@ -1624,6 +1691,7 @@ function addPolyObstacle(pts) {
 function deleteObstacle(idx) { if (idx>=0&&idx<obstacles.length) { obstacles.splice(idx,1); solidMaskDirty = true; } }
 
 function mousePressed(event) {
+  if (guide.open) return;      // the guide explains the canvas; it does not let a click through
   if (event && event.target) { let t=event.target; if (t.closest('#sidebar')||t.tagName==='BUTTON'||t.id==='bed-thumb'||t.id==='timeline-canvas') return; }
   if (mouseX<0||mouseX>width||mouseY<0||mouseY>height) return;
   if (model.pointer && model.pointer('press', mouseX, mouseY, event)) return;   // a model tool took the click
@@ -1695,6 +1763,7 @@ function mousePressed(event) {
 }
 
 function mouseDragged(event) {
+  if (guide.open) return;
   if (model.pointer && model.pointer('drag', mouseX, mouseY, event)) return;
   if (event&&event.target) { let t=event.target; if(t.closest('#sidebar')||t.id==='bed-thumb'||t.id==='timeline-canvas') return; }
   if (bedMode) {
@@ -1725,6 +1794,7 @@ function mouseDragged(event) {
 function mouseReleased() { dragging=false; resizeDrag=null; polyVertexDrag=null; editingLongPt=-1; editingXSStation=null; }
 
 function mouseWheel(event) {
+  if (guide.open) return true;
   if (event && event.target && event.target.id==='timeline-canvas') return true;
   let delta=event.delta>0?5:-5;
   ghostRotation=(ghostRotation+delta)%360; if(ghostRotation<0)ghostRotation+=360;
@@ -1742,6 +1812,7 @@ function toggleBedMode() {
 }
 
 function keyPressed() {
+  if (guide.open) return;      // while the guide is open its keys come first and nothing else moves
   if (key==='r'||key==='R') {
     simTime=0; initParticles(); depoBuffer.clear(); trailBuffer.clear(); deposited=[];
     if (depoGrid) depoGrid.fill(0);
@@ -2064,6 +2135,8 @@ function updateTimelineVisibility() {
 //     makeObstacle(type, x, y, rot) {},   // build an object of the model's own kind, or null
 //     key(k) {},                      // a key the interface does not use; return true if taken
 //     help: '4 nourish',              // appended to the key list
+//     guide: [{ id, title, text, target, after }],   // steps for the guide (see THE GUIDE);
+//                                     // after defaults to 'thumb'
 //     clock() {}, formatDuration(t) {},   // the timeline's time and how to print it
 //     timeline: { duration, objectDuration, min, max, step },
 //     render: { slowColor, fastColor, flowOpacity },   // render defaults
@@ -2128,6 +2201,8 @@ function mountModel() {
 //     frame() {},                      // optional, runs every frame after the scene is drawn
 //     keys:  { b: fn },                // optional, lower-case key -> handler
 //     help:  'B bake',                 // optional, appended to the key list
+//     guide: [{ id, title, text, target, after }],   // optional, steps for the guide (see
+//                                      // THE GUIDE); after defaults to 'stats'
 //     tab:   { id: 'bridge', label: 'bridge' },   // optional, for a site that is not in
 //                                      // SITE_TABS: adds a tab for this page, marked current
 //   });
@@ -2170,6 +2245,210 @@ function backendKey(k) {
     if (b.keys && typeof b.keys[k] === 'function') { b.keys[k](); return true; }
   }
   return false;
+}
+
+// ─────────────────────────────────────────────
+// THE GUIDE
+// ─────────────────────────────────────────────
+// A walkthrough for someone new to the interface: the page dims, one part at a time is lit
+// up, and a card beside it says what it is and how to use it. The "? guide" button and the
+// ? key open and close it, and so do its ✕ and Esc. The model keeps running underneath (a
+// paused run is started and paused again on closing), but clicks and keys go to the guide
+// alone while it is open, so nothing on the site can be changed by accident.
+//
+// A step is { id, target, title, text, show }. target is a selector, a list of them (the
+// light covers them all), or a function returning elements; with none the card sits in the
+// middle. text is markup, written here, never taken from the scene. show() runs before the
+// step is drawn. The steps here are the interface's own. A model adds its steps as
+// model.guide and a backend as guide in registerBackend(), each naming the step it follows
+// with after (default 'thumb' for a model, 'stats' for a backend). after may name another
+// added step, and steps added after the same step keep the order they were given in.
+const guide = { open: false, i: 0, steps: [], saved: null, forceHelp: false, refreshToggles: null };
+
+// The section a sidebar control sits in, from its label to the row of its last control.
+function guideSection(firstId, lastId) {
+  return () => {
+    const a = document.getElementById(firstId), b = document.getElementById(lastId);
+    return [a && (a.closest('.sect-label') || a), b && (b.closest('.ctrl-row') || b)];
+  };
+}
+const guideCanvas = () => [document.querySelector('canvas.p5Canvas')];
+
+const GUIDE_STEPS = [
+  { id: 'welcome', title: 'How this works', text:
+    `<p>This is a sketching tool for sediment. You draw a site, water moves across it, and the sediment it carries settles out or gets picked back up. You see where the ground would build up and where it would wear away, and you see it while you are still changing the design.</p>
+     <p>This guide walks through each part of the screen. Use next, or the arrow keys. Close it any time with the ✕ or Esc. The model keeps running behind it.</p>` },
+  { id: 'canvas', target: guideCanvas, title: 'The site', text:
+    `<p>The big field is the site seen from above. Each moving point is a grain of sediment carried by the water, and its color shifts as it speeds up or slows down.</p>
+     <p>Where the water slows, grains drop and stay. Those are the deposits, the marks that build up over time. Where the water speeds up it can lift them again. Most of what you learn here comes from watching where deposits gather and where they get scoured away.</p>` },
+  { id: 'draw', target: guideCanvas, title: 'Placing objects', text:
+    `<p>An object is anything solid you put in the water. A boulder, a pier, a groyne, a planted island, a wall. The water has to go around it, and the sediment shows you what that does.</p>
+     <p>Press <b>1</b> for a circle, <b>2</b> for a rectangle or <b>3</b> for a freeform shape, then click on the site to place it. For a freeform shape, click each corner, then click the first corner again to close it.</p>
+     <p>Click an object to select it. Drag it to move it, drag a handle to resize it, and turn the mouse wheel to rotate it. <b>[</b> and <b>]</b> change the size of the next one, and Backspace deletes the one you selected.</p>
+     <p>Then watch. Sediment usually piles up in the slow water behind an object and gets scoured away beside it, where the water squeezes past.</p>` },
+  { id: 'tabs', target: '#site-tabs', title: 'Models and scenes', text:
+    `<p>Each tab is a different model of moving water. River is a channel with water flowing through it. Coast is a beach with waves coming in from the sea. Click a tab to switch.</p>
+     <p>Each tab keeps its own scene in this browser, so you can leave and come back to find it as you left it. Nothing carries over from one model to another.</p>
+     <p><b>open</b> loads a scene from a case you exported before, either its scene.json or the ZIP itself. <b>new</b> forgets the saved scene and starts this model fresh.</p>` },
+  { id: 'stats', target: '#sidebar-stats', title: 'The numbers', text:
+    `<p><b>sim-time</b> is how long the model has been running. <b>mobile</b> is the number of grains moving right now and <b>deposited</b> is how many have settled. <b>obstacles</b> counts the objects you have placed.</p>
+     <p><b>shape</b> is the kind of object your next click will place and <b>φ</b> is its rotation. When the run is stopped you will see PAUSED here.</p>` },
+  { id: 'thumb', target: ['#bed-thumb', '#z-scale'], title: 'The ground in 3D', text:
+    `<p>This is the ground in three dimensions, the shape you drew plus everything that has settled on it since. Drag it to turn it around. The numbers under it are its lowest and highest points.</p>
+     <p><b>z-scale</b> stretches the heights so small changes are easier to see. It changes the picture, not the model.</p>` },
+  { id: 'render', target: guideSection('reset-render', 'particle-count'), title: 'Render', text:
+    `<p>These change how the run looks, not what it does. Use them to make the picture read clearly, for yourself or for a review.</p>
+     <p><b>trail fade</b> is how long each grain leaves a streak behind it and <b>size</b> is how big a grain is drawn. <b>slow</b> and <b>fast</b> are the colors a grain moves between as it speeds up, and <b>color thresh</b> is the speed where it reaches the fast color.</p>
+     <p><b>depo size</b>, <b>recent</b> and <b>oldest</b> draw the deposits, so you can read the order the sediment arrived in. <b>flow scale</b>, <b>flow dens</b> and <b>flow opacity</b> draw the flow lines. <b>particles</b> is the number of grains in play. More grains fill the picture in but run slower.</p>` },
+  { id: 'toggles', target: '#sidebar .ctrl-toggles', title: 'Toggles', text:
+    `<p><b>grid</b> shows the grid the water is worked out on. <b>flow</b> draws lines that show which way the water is going and how fast. <b>pause</b> stops and starts the run, the same as the space bar.</p>
+     <p><b>elev</b> labels the ground with its height. Each click shows something different, heights on a coarse grid, then on a fine one, then the fifteen highest points, then the fifteen lowest, then nothing. <b>3d</b> makes the 3D view bigger.</p>
+     <p><b>bed</b> opens the ground editor, which comes next.</p>` },
+  { id: 'bed', target: '#toggle-bed', title: 'Shaping the ground', text:
+    `<p>The ground under the water is called the bed. <b>bed</b> pauses the run and opens an editor along the bottom of the site. It is a long section, the height of the ground from one end of the site to the other.</p>
+     <p>Click in that strip to add a point and drag a point to move it. Each point also gets a narrow strip above it, a cross section through the site at that spot. Click in it to shape the ground from side to side, a deeper channel, a raised bank, a shelf.</p>
+     <p>Click <b>bed</b> again, or press M or Esc, to go back. The run carries on as it was.</p>` },
+  { id: 'timeline', target: guideSection('toggle-timeline', 'toggle-pingpong'), title: 'Timeline', text:
+    `<p>Normally every object is there the whole time. Turn the timeline <b>on</b> and objects can come and go. A strip opens across the top with a row for each object, and the bars in a row are when that object is in place.</p>
+     <p>Drag a bar to move it, drag its end to make it longer or shorter, and drag across an empty part of a row to add another. This is how you test a sequence, a cofferdam that goes in and comes out, a structure built in phases, a bank that is planted and then let go.</p>
+     <p><b>loop</b> is the length of the cycle. <b>mode</b> sets whether time starts over at the end (loop) or runs forward and then back (pingpong).</p>` },
+  { id: 'keys', target: '#help', title: 'Keys', text:
+    `<p>This line lists every key. It fades out while the model runs and comes back when you pause, so it stays out of the picture. <b>H</b> hides it altogether.</p>
+     <p>Two keys are worth knowing early. <b>R</b> restarts the run but keeps your objects and the ground you drew. <b>S</b> saves a picture of the site.</p>` },
+  { id: 'end', target: '#guide-btn', title: 'That is the tour', text:
+    `<p>Open this guide again any time with this button or the <b>?</b> key.</p>` },
+];
+
+// The interface's steps with the model's and each backend's added in. A step that names a
+// step that does not exist goes in before the last one, and is listed in .orphans.
+function guideSteps() {
+  const out = GUIDE_STEPS.map(s => Object.assign({}, s)), orphans = [];
+  const add = (list, dflt, from) => {
+    for (const s of (list || [])) {
+      const after = s.after || dflt;
+      let k = out.findIndex(x => x.id === after), j;
+      if (k < 0) { orphans.push(from + ':' + (s.id || s.title)); j = out.length - 1; }
+      else { j = k + 1; while (j < out.length && out[j].after === after) j++; }
+      out.splice(j, 0, Object.assign({}, s, { after, from }));
+    }
+  };
+  add(model && model.guide, 'thumb', model ? model.id : 'model');
+  for (const b of backends) add(b.guide, 'stats', b.id);
+  out.orphans = orphans;
+  return out;
+}
+
+// The key list shows while the run is stopped and hides while it runs, and the guide shows
+// it on the step that is about it. H hides it either way.
+function helpVisible() { return showHelp && (paused || guide.forceHelp); }
+
+function guideElements(s) {
+  let t = s && s.target;
+  if (!t) return [];
+  if (typeof t === 'function') t = t();
+  if (!Array.isArray(t)) t = [t];
+  return t.map(x => typeof x === 'string' ? document.querySelector(x) : x)
+          .filter(e => e && e.getClientRects && e.getClientRects().length);
+}
+
+function guideOpen() {
+  if (guide.open) return;
+  guide.steps = guideSteps();
+  guide.open = true;
+  guide.saved = { paused };
+  if (paused && !bedMode) {           // the guide shows the model running
+    paused = false;
+    if (typeof loop === 'function') loop();
+  }
+  document.getElementById('guide').classList.add('open');
+  const b = document.getElementById('guide-btn'); b.classList.add('on'); b.setAttribute('aria-expanded', 'true');
+  if (guide.refreshToggles) guide.refreshToggles();
+  guideGo(0);
+}
+
+function guideClose() {
+  if (!guide.open) return;
+  guide.open = false; guide.forceHelp = false;
+  document.getElementById('guide').classList.remove('open');
+  const b = document.getElementById('guide-btn'); b.classList.remove('on'); b.setAttribute('aria-expanded', 'false');
+  if (guide.saved && guide.saved.paused && !bedMode) paused = true;
+  if (guide.refreshToggles) guide.refreshToggles();
+}
+
+function guideGo(i) {
+  const steps = guide.steps, n = steps.length;
+  guide.i = Math.max(0, Math.min(i, n - 1));
+  const s = steps[guide.i];
+  if (s.show) s.show();
+  guide.forceHelp = s.id === 'keys';
+  document.getElementById('guide-title').textContent = s.title;
+  document.getElementById('guide-text').innerHTML = s.text;
+  document.getElementById('guide-count').textContent = (guide.i + 1) + ' of ' + n;
+  document.getElementById('guide-prev').disabled = guide.i === 0;
+  document.getElementById('guide-next').textContent = guide.i === n - 1 ? 'done' : 'next ▶';
+  // Bring a sidebar target into the sidebar's view. Only the sidebar scrolls: the page itself
+  // is fixed, and scrolling it would shift the canvas.
+  const els = guideElements(s).filter(e => e.closest && e.closest('#sidebar'));
+  if (els.length) { els[els.length - 1].scrollIntoView({ block: 'nearest' }); els[0].scrollIntoView({ block: 'nearest' }); }
+  (window.requestAnimationFrame || setTimeout)(guidePlace);
+}
+
+// Put the light on the step's target and the card beside it: on the side with more room,
+// then below or above, and over the target's top corner when it fills the screen (the canvas).
+function guidePlace() {
+  if (!guide.open) return;
+  const s = guide.steps[guide.i], els = guideElements(s);
+  const spot = document.getElementById('guide-spot'), card = document.getElementById('guide-card');
+  const vw = window.innerWidth, vh = window.innerHeight, cw = card.offsetWidth, ch = card.offsetHeight, m = 12, pad = 5;
+  if (!els.length) {
+    spot.className = 'none'; spot.setAttribute('style', '');
+    card.style.left = Math.max(m, (vw - cw) / 2) + 'px'; card.style.top = Math.max(m, (vh - ch) / 2) + 'px';
+    return;
+  }
+  const rs = els.map(e => e.getBoundingClientRect());
+  const L = Math.max(3, Math.min(...rs.map(r => r.left)) - pad), T = Math.max(3, Math.min(...rs.map(r => r.top)) - pad);
+  const R = Math.min(vw - 3, Math.max(...rs.map(r => r.right)) + pad), B = Math.min(vh - 3, Math.max(...rs.map(r => r.bottom)) + pad);
+  spot.className = '';
+  Object.assign(spot.style, { left: L + 'px', top: T + 'px', width: (R - L) + 'px', height: (B - T) + 'px' });
+  const clampY = y => Math.min(Math.max(m, y), vh - ch - m), clampX = x => Math.min(Math.max(m, x), vw - cw - m);
+  const tries = [];
+  const leftFits = L - m - cw >= m, rightFits = R + m + cw <= vw - m;
+  const side = (L + R) / 2 > vw / 2 ? ['left', 'right'] : ['right', 'left'];
+  for (const sd of side) {
+    if (sd === 'left' && leftFits) tries.push([L - m - cw, clampY(T)]);
+    if (sd === 'right' && rightFits) tries.push([R + m, clampY(T)]);
+  }
+  if (B + m + ch <= vh - m) tries.push([clampX(L), B + m]);
+  if (T - m - ch >= m) tries.push([clampX(L), T - m - ch]);
+  const [x, y] = tries[0] || [clampX(L + 16), clampY(T + 16)];
+  card.style.left = x + 'px'; card.style.top = y + 'px';
+}
+
+function guideKey(e) {
+  const t = e && e.target, field = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT');
+  if (!guide.open) {
+    if (e && e.key === '?' && !field) { if (e.preventDefault) e.preventDefault(); guideOpen(); }
+    return;
+  }
+  // Open: the guide's keys come first and no other key reaches the interface.
+  if (e.stopImmediatePropagation) e.stopImmediatePropagation(); else if (e.stopPropagation) e.stopPropagation();
+  if (e.key === 'Escape' || e.key === '?') guideClose();
+  else if (e.key === 'ArrowRight' || e.key === 'Enter') guide.i === guide.steps.length - 1 ? guideClose() : guideGo(guide.i + 1);
+  else if (e.key === 'ArrowLeft') guideGo(guide.i - 1);
+  if (e.key !== 'Tab' && e.preventDefault) e.preventDefault();
+}
+
+function mountGuide() {
+  const btn = document.getElementById('guide-btn');
+  if (!btn) return;
+  btn.addEventListener('click', function () { guide.open ? guideClose() : guideOpen(); this.blur(); });
+  document.getElementById('guide-x').addEventListener('click', guideClose);
+  document.getElementById('guide-prev').addEventListener('click', () => guideGo(guide.i - 1));
+  document.getElementById('guide-next').addEventListener('click', () => guide.i === guide.steps.length - 1 ? guideClose() : guideGo(guide.i + 1));
+  window.addEventListener('keydown', guideKey, true);       // capture: ahead of p5 and the Space listener
+  window.addEventListener('resize', () => { if (guide.open) guidePlace(); });
+  const sb = document.getElementById('sidebar');
+  if (sb) sb.addEventListener('scroll', () => { if (guide.open) guidePlace(); });
 }
 
 // The drawn scene, in canvas pixels. Every backend sends or exports this.

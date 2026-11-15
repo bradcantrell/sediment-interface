@@ -411,6 +411,20 @@ function riverUpdateToggles() {
 registerModel({
   id: 'river',
 
+  // The river's steps in the interface's guide (see THE GUIDE in index.html).
+  guide: [
+    { id: 'river', after: 'welcome', title: 'The river', text:
+      `<p>This model is a stretch of river seen from above. Water comes in at the left edge and leaves at the right, and the top and bottom edges hold it in like banks.</p>
+       <p>Use it to ask what a change in the channel does downstream. A bar that forms below a bridge pier, a pool that scours where the flow is pinched, sediment that drops out in the slack water behind a planted island.</p>` },
+    { id: 'river-physics', after: 'thumb', target: guideSection('reset-physics', 'erosion-prob'), title: 'Physics', text:
+      `<p>These change how the river behaves. <b>inflow</b> is how fast the water comes in. Faster water carries sediment further and scours harder. <b>friction</b> is the drag of the riverbed on all of the water. More friction slows the water everywhere, so more settles and less is lifted.</p>
+       <p><b>settle thresh</b> is the speed below which a grain can settle, and <b>settle prob</b> is how likely it is to settle each moment once it is that slow. <b>erode thresh</b> is the speed above which the water can lift a deposit again, and <b>erode prob</b> is how likely that is. Together they decide where the ground builds and where it wears.</p>
+       <p><b>zone μ</b> and <b>brush r</b> belong to the friction brush, which comes after the toggles. <b>reset</b> puts all of these back.</p>` },
+    { id: 'river-fric', after: 'toggles', target: '#toggle-fric', title: 'Painting roughness', text:
+      `<p><b>fric</b> lets you paint rough ground onto the site, like a reed bed, a planted bank or a stretch of riprap. Click it once for <b>fric+</b> and drag on the site to paint roughness on. Click again for <b>fric-</b> to rub it off, and once more to stop painting.</p>
+       <p>Rough ground slows the water passing over it, so sediment settles there and the ground resists scour. In the physics section, <b>zone μ</b> sets how rough the paint is and <b>brush r</b> sets the size of the brush.</p>` },
+  ],
+
   controls: {
     html: `
 <div class="sect-label">physics <button class="reset-btn" id="reset-physics">reset</button></div>
