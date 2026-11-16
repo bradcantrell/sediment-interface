@@ -35,6 +35,9 @@
 //                                     after the step each names), its ways in and out, that
 //                                     it holds keys and clicks, and the key list showing only
 //                                     while the run is stopped
+//  9d. streaks and resizing        — grains drawn as streaks along their path (dots when the
+//                                     toggle is off, the choice saved), and a resize stretching
+//                                     the scene so a save after it comes back in place
 //  10. the site's own checks        — dev/site_checks.js, if there is one
 //  11. nothing has gone non-finite
 //
@@ -970,6 +973,69 @@ try {
   check(running === "0" && stopped === "1" && hidden === "0" && onStep === "1",
         "the key list hides while the run goes, shows when it stops, hides with H, and shows on the guide's step about it",
         `running ${running}, stopped ${stopped}, H ${hidden}, guide step ${onStep}`);
+}
+
+// ---------------------------------------------------------------- 9d. streaks and resizing
+{
+  // Streaks: on by default; each grain is a line from where it was last frame to where it is
+  // now, added (lighter), with the buffer faded by erasing. Off: dots, no lines.
+  const el = (id) => app.run(`document.getElementById('${id}')`);
+  const spy = () => app.run(`(() => { const r = { line: [], ellipse: 0, blend: [], erase: 0 }, b = trailBuffer;
+    b.line = (x1, y1, x2, y2) => r.line.push([x1, y1, x2, y2]); b.ellipse = () => { r.ellipse++; };
+    b.blendMode = (m) => r.blend.push(m); b.erase = () => { r.erase++; }; return r; })()`);
+  app.setPaused(false);
+  const onAtStart = app.run("showStreaks") === true;
+  app.draw();                                     // every grain now has a last position
+  const before = new Map(S().particles.map(p => [p, [p.x, p.y]]));
+  // One grain jumps across the canvas, as a model that moves a grain itself might do: that
+  // is not a path, and no streak may cross the gap.
+  const jumper = S().particles.find(p => p.x < app.run("width") / 2);
+  jumper.x += app.run("width") / 2; before.delete(jumper);
+  let r = spy(); app.draw();
+  const after = S().particles.filter(p => before.has(p));
+  const ends = new Set(r.line.map(l => l[2].toFixed(3) + ',' + l[3].toFixed(3)));
+  const starts = new Set(r.line.map(l => l[0].toFixed(3) + ',' + l[1].toFixed(3)));
+  const matched = after.filter(p => ends.has(p.x.toFixed(3) + ',' + p.y.toFixed(3)) &&
+    starts.has(before.get(p)[0].toFixed(3) + ',' + before.get(p)[1].toFixed(3))).length;
+  const longest = r.line.reduce((m, l) => Math.max(m, Math.hypot(l[2] - l[0], l[3] - l[1])), 0);
+  const streakOk = onAtStart && r.line.length > 0 && matched >= 0.9 * after.length && r.ellipse === 0 &&
+    r.blend.includes(app.run("ADD")) && r.erase > 0 && longest <= app.run("STREAK_JUMP");
+  el("toggle-streak").dispatchEvent({ type: "click" });
+  r = spy(); app.draw();
+  const dotsOk = app.run("showStreaks") === false && r.line.length === 0 && r.ellipse > 0;
+  const saved = app.run("captureScene()");
+  el("toggle-streak").dispatchEvent({ type: "click" });
+  app.run("applySavedScene")(saved);
+  const kept = app.run("showStreaks") === false;
+  app.run("showStreaks = true");
+  check(streakOk && dotsOk && kept,
+        "grains draw as streaks from where they were to where they are, dots when the toggle is off, and the choice is saved",
+        `on at start ${onAtStart}, ${r.line.length === 0 ? '' : ''}streaks ${matched}/${after.length} matched, longest ${longest.toFixed(1)} px, ` +
+        `dots when off ${dotsOk}, kept in the scene ${kept}`);
+
+  // Resizing stretches the scene with the canvas, so a save after a resize comes back in the
+  // same place on a canvas of the first size. Before, objects stayed put through the resize
+  // and the save recorded the new size with the old positions.
+  const W0 = app.run("width"), H0 = app.run("height");
+  const obs0 = S().obstacles.map(o => Object.assign({}, o)), bed0 = S().bedPoints.map(p => Object.assign({}, p));
+  app.setObstacles([{ type: 'rect', x: W0 * 0.5, y: H0 * 0.25, w: 40, h: 30, rotation: 0, clips: [{ start: 0, dur: Infinity }] }]);
+  app.setBedPoints([{ x: W0 * 0.2, z: 20 }, { x: W0 * 0.8, z: 40 }]);
+  const frac = () => { const o = S().obstacles[0], w = app.run("width"), h = app.run("height");
+    return [o.x / w, o.y / h, S().bedPoints[1].x / w]; };
+  const f0 = frac();
+  app.run("windowResized()");               // the mock's window is the canvas, so this narrows it by the sidebar
+  const f1 = frac(), resized = app.run("width") !== W0;
+  app.run("saveScene()");
+  app.run(`resizeCanvas(${W0}, ${H0})`);
+  app.run("applySavedScene")(app.run("readSavedScene()"));
+  const f2 = frac();
+  const same = (a, b) => a.every((v, k) => Math.abs(v - b[k]) < 1e-6);
+  check(resized && same(f0, f1) && same(f0, f2),
+        "resizing the window stretches the scene with the canvas, and a save after it comes back in the same place",
+        `fractions ${f0.map(v => v.toFixed(3)).join("/")} -> resized ${f1.map(v => v.toFixed(3)).join("/")} -> reloaded ${f2.map(v => v.toFixed(3)).join("/")}`);
+  app.run(`resizeCanvas(${W0}, ${H0}); cellW = width / (NX + 2); cellH = height / (NY + 2)`);
+  app.setObstacles(obs0); app.setBedPoints(bed0); app.run("solidMaskDirty = true");
+  global.__store.clear(); app.setPaused(true);
 }
 
 // ---------------------------------------------------------------- 10. the site's own checks

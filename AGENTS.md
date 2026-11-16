@@ -73,6 +73,12 @@ Both live in `index.html`, so every site gets them through the sync.
   interface. A site that must not be listed here (the private bridge, a local experiment)
   names its own tab instead: `registerBackend({ ..., tab: { id, label } })` in its `site.js`.
   Nothing private goes in `SITE_TABS`; this file is public.
+- **Streaks.** `showStreaks` (the `streak` toggle, on by default) draws each grain as a line
+  from where it was last frame to where it is (`p.lx`, `p.ly`), added with `blendMode(ADD)`
+  into `trailBuffer`, which `fadeTrails()` erases toward transparent. A move longer than
+  `STREAK_JUMP` is a jump, not a path, and gets no line. Off, the old dots and darkening fade.
+- **Resizing** stretches the scene with the canvas (`stretchScene()`, also used when a saved
+  scene from another window size comes back), so objects stay over the same cells.
 - **The saved scene.** Leaving the page (`pagehide`) writes the scene to `localStorage`
   under `sediment-interface/scene/<tab id>`, and `setup()` puts it back before the spin-up.
   Saved: obstacles with their clips, the drawn bed, every `input` and `select` in the
@@ -124,9 +130,9 @@ and the simulation was dead along with every listener attached after the throw.
 
 The harness loads the page the way a browser does (inline script, then `model.js`, then
 `site.js`, one scope), mocks p5 and the DOM, and asserts on model state rather than pixels.
-71 checks:
+73 checks:
 
-- **Interface** (`dev/headless_harness.js`, 51): `setup()` completes, the draw loop advances
+- **Interface** (`dev/headless_harness.js`, 53): `setup()` completes, the draw loop advances
   time, sediment moves, a transect edits the bed, every visible strip is clickable, the bed
   editor works through the real mouse handlers (bed mode restores the pause state, a click
   lands at the elevation under the pointer, drags stop at the range, a signed range goes
@@ -141,7 +147,9 @@ The harness loads the page the way a browser does (inline script, then `model.js
   discarded, each tab has its own, `new` forgets it), the guide works (its steps in order with
   the model's and the site's placed after the step each names, it opens from its button and
   ?, runs the model, holds keys and clicks, closes from ✕, Esc, done and the button) and the
-  key list shows only while the run is stopped, nothing goes non-finite.
+  key list shows only while the run is stopped, grains draw as streaks from where they were
+  to where they are (dots with the toggle off, the choice saved), a resize stretches the scene
+  so a save after it comes back in place, nothing goes non-finite.
 - **River model** (`dev/model_checks.js`, 13): the scene carries the inflow, sediment travels downstream, friction slows
   the field, the friction brush adds and subtracts, still water stays still, leftover motion
   stays bounded, and the bed is in the flow (see below).
