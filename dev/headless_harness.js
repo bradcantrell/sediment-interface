@@ -710,8 +710,10 @@ try {
       deposited.length = 0;
       settleParticle({ x: (i + 0.5) * DEPO_CELL, y: (j + 0.5) * DEPO_CELL }, 0);
       const added = depoGrid[q] - before, amt = deposited.length === 1 ? deposited[0].amt : null;
+      // Every chance taken: a high bed resists lifting, and that is a dice roll too.
       particles = []; erosionThresh = -1; erosionProb = 1;
-      updateParticles();
+      const r0 = globalThis.random; globalThis.random = (a, b) => (a === undefined ? 0 : b === undefined ? 0 : a);
+      try { updateParticles(); } finally { globalThis.random = r0; }
       const back = depoGrid[q] - before, lifted = deposited.length === 0;
       depoGrid.set(keep.depo); deposited = keep.dep; particles = keep.parts; erosionThresh = keep.et; erosionProb = keep.ep;
       return { added, amt, back, lifted };
