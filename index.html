@@ -2172,6 +2172,8 @@ function updateTimelineVisibility() {
 //     pointer(phase, x, y, event) {}, // 'press' | 'drag'; return true to take the pointer
 //     drawUnderlay() {},              // drawn over the bed, under the particles
 //     updateToggles() {},             // refresh the model's toggle buttons
+//     viewState() {},                 // the model's own view toggles, saved with the scene
+//     applyViewState(v) {},           // put them back from a saved scene
 //     scene(st) {},                   // add the model's part to sceneState()
 //     bed: { zMin, zMax, datumLabel },   // elevation range of the bed editor (default 0..160)
 //     defaultBedZ(x, y) {},           // the bed when nothing is drawn (default: flat, 0)
@@ -2599,7 +2601,8 @@ function captureScene() {
     // always-on clip is written as 'inf'.
     obstacles: obstacles.map(o => Object.assign({}, o, o.clips ? { clips: o.clips.map(c => Object.assign({}, c, { dur: c.dur === Infinity ? 'inf' : c.dur })) } : {})),
     bedPoints, bedXSections, controls,
-    view: { showFlow, showGrid, showStreaks, elevMode, timelineEnabled, timelinePingPong, thumbAngleX, thumbAngleY },
+    view: { showFlow, showGrid, showStreaks, elevMode, timelineEnabled, timelinePingPong, thumbAngleX, thumbAngleY,
+            model: model.viewState ? model.viewState() : undefined },
   };
 }
 
@@ -2692,6 +2695,7 @@ function applySavedScene(s) {
   if (typeof vw.timelinePingPong === 'boolean') timelinePingPong = vw.timelinePingPong;
   if (isFinite(vw.thumbAngleX)) thumbAngleX = vw.thumbAngleX;
   if (isFinite(vw.thumbAngleY)) thumbAngleY = Math.max(5, Math.min(85, vw.thumbAngleY));
+  if (vw.model && typeof vw.model === 'object' && model.applyViewState) model.applyViewState(vw.model);
   const pp = document.getElementById('toggle-pingpong');
   if (pp) pp.textContent = timelinePingPong ? 'pingpong' : 'loop';
 

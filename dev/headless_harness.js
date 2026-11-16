@@ -37,7 +37,8 @@
 //                                     while the run is stopped
 //  9d. streaks and resizing        — grains drawn as streaks along their path (dots when the
 //                                     toggle is off, the choice saved), and a resize stretching
-//                                     the scene so a save after it comes back in place
+//                                     the scene so a save after it comes back in place, and a
+//                                     model's own view toggles saved with the scene
 //  10. the site's own checks        — dev/site_checks.js, if there is one
 //  11. nothing has gone non-finite
 //
@@ -1035,6 +1036,21 @@ try {
         `fractions ${f0.map(v => v.toFixed(3)).join("/")} -> resized ${f1.map(v => v.toFixed(3)).join("/")} -> reloaded ${f2.map(v => v.toFixed(3)).join("/")}`);
   app.run(`resizeCanvas(${W0}, ${H0}); cellW = width / (NX + 2); cellH = height / (NY + 2)`);
   app.setObstacles(obs0); app.setBedPoints(bed0); app.run("solidMaskDirty = true");
+
+  // A model's own view toggles (the coast's waves and smooth) go into the scene through
+  // viewState() and come back through applyViewState(). A stand-in model state is used here
+  // so the check runs on every site, whether or not its model has toggles of its own.
+  const hadVS = app.run("model.viewState"), hadAVS = app.run("model.applyViewState");
+  app.run("globalThis.__mv = { a: true, b: 3 }; model.viewState = () => Object.assign({}, __mv); model.applyViewState = (v) => { __mv = Object.assign({}, v); }");
+  app.run("saveScene()");
+  app.run("__mv = { a: false, b: 0 }");
+  app.run("applySavedScene")(app.run("readSavedScene()"));
+  const mv = app.run("__mv");
+  check(mv.a === true && mv.b === 3, "a model's own view toggles are saved with the scene and put back",
+        `got ${JSON.stringify(mv)}`);
+  app.run("model.viewState = undefined; model.applyViewState = undefined; delete globalThis.__mv");
+  if (hadVS) app.run("model").viewState = hadVS;
+  if (hadAVS) app.run("model").applyViewState = hadAVS;
   global.__store.clear(); app.setPaused(true);
 }
 
