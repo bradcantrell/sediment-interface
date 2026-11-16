@@ -1,5 +1,6 @@
 # Sediment Interface — Project Conventions
-# Auto-loaded by Hermes when working in this directory
+# Read by coding agents working in this directory. Notes about our own machines and
+# checkouts are in `AGENTS.local.md`, which git ignores; read it too if it is there.
 
 Repo `bradcantrell/sediment-interface` (public, GitHub Pages on `main`:
 https://bradcantrell.github.io/sediment-interface/). Two things live here:
@@ -18,7 +19,7 @@ layer a change belongs to before making it.
 | File | Layer | What it is | Who else uses it |
 |---|---|---|---|
 | `index.html` | **interface** | Canvas, sediment particles, drawn bed (transect + cross-sections), deposit, obstacles and their timeline, 3D view, sidebar. Knows nothing about how water moves. | Every repo, byte for byte |
-| `model.js` | **model** | How the water moves. Here: the river (Stam stable-fluids solver, friction, the bed as depth). Writes the flow field the interface moves sediment through. | Repos that want the river (Sediment Bridge) |
+| `model.js` | **model** | How the water moves. Here: the river (Stam stable-fluids solver, friction, the bed as depth). Writes the flow field the interface moves sediment through. | Repos that want the river |
 | `site.js` | **site** | What this repo does with the scene. Here: the OpenFOAM case export. | Nobody; each repo has its own |
 
 The same split applies to tests: `dev/headless_harness.js` (interface), `dev/model_checks.js`
@@ -98,8 +99,8 @@ Both live in `index.html`, so every site gets them through the sync.
 
 This repo owns `index.html`, `model.js`, `dev/headless_harness.js` and `dev/model_checks.js`.
 Other repos copy them byte for byte with their own `dev/sync_core.sh`, record the commit and
-hashes in `dev/core.lock`, and fail their harness if a copy drifts. First: the private
-Sediment Bridge (interface + river model + its own `site.js`).
+hashes in `dev/core.lock`, and fail their harness if a copy drifts. The coastal interface
+vendors `index.html` and the interface harness.
 
 - Never edit a vendored copy. Change it here, commit, then sync there.
 - A change here reaches the other repos only when they sync. After changing a shared file,
@@ -165,8 +166,8 @@ Rules that have earned their place:
   hash `u`, `v`, the particles and the deposit before and after. The split into
   interface and model (2026-11-13) was accepted on identical hashes at every checkpoint,
   not on the harness passing.
-- **Look at it in a browser before calling an interface change done.** Headless Chrome is
-  on vlmars: `google-chrome --headless=new --screenshot=out.png file://.../index.html`.
+- **Look at it in a browser before calling an interface change done.** Headless Chrome:
+  `google-chrome --headless=new --screenshot=out.png file://.../index.html`.
   Layout is invisible to the harness.
 
 ## The river model (`model.js`)
@@ -210,13 +211,10 @@ tidal repo's AGENTS.md.
 
 - `main` — the interface, the river model and the export site (Pages).
 - `shared-core` — where the interface/model/site split and the bed in the flow were built.
-  Merged into `main` on 2026-11-14 and equal to it since; new work can go on either, and
-  nothing is pushed without Brad's OK.
+  Merged into `main` on 2026-11-14 and equal to it since; new work can go on either.
 - `tidal-prototype` — tidal dev.
 
-## Checkouts and related repos
+## Related repos
 
-- This repo: `/mnt/vault/projects/sediment-interface` on vlmars; `D:/workspace/sediment-interface` on vlio.
-- Sediment Bridge (PRIVATE, live OpenFOAM coupling): `/mnt/vault/infrastructure/www/sediment-bridge`
-  (`U:/www/sediment-bridge` from Windows). See its AGENTS.md.
-- Coastal interface: repo `coastal-sediment-interface`. Tidal: `D:/workspace/tidal-sediment-interface`.
+- Coastal interface: `bradcantrell/coastal-sediment-interface`.
+- Tidal interface: `bradcantrell/tidal-sediment-interface`.

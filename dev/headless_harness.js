@@ -42,8 +42,7 @@
 //
 //   node dev/headless_harness.js index.html
 //
-// The p5/DOM mock block is adapted from the coastal interface's harness
-// (D:/workspace/coastal_headless_v2.js).
+// The p5/DOM mock block is adapted from the coastal interface's harness.
 
 const fs = require("fs");
 const path = require("path");

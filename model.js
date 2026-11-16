@@ -12,8 +12,8 @@
 // cellH), the fields it writes (u, v), the obstacle mask it reads (solid), the bed it reads
 // (bedPoints, computeUserBedZ, depoZ, depoGrid, GW, GH, DEPO_CELL), and DT.
 //
-// Other repos use this same file unchanged (the private Sediment Bridge vendors it with
-// index.html). A different kind of water (waves, tide) is a different model.js.
+// Other repos can use this same file unchanged, vendored with index.html. A different
+// kind of water (waves, tide) is a different model.js.
 
 // ─────────────────────────────────────────────
 // PARAMETERS
