@@ -88,6 +88,13 @@
       font-size: 11px; color: rgba(255,255,255,0.45);
       pointer-events: none; line-height: 1.7; user-select: none;
     }
+    /* The zoom thumbnail, top left, shown only while zoomed in. */
+    #zoom-box {
+      position: fixed; top: 48px; left: 12px; z-index: 20; display: none;
+      pointer-events: none; user-select: none;
+    }
+    #zoom-map { display: block; border-radius: 3px; box-shadow: 0 1px 6px rgba(0,0,0,0.6); }
+    #zoom-text { font-size: 11px; color: rgba(255,200,100,0.85); margin-top: 4px; white-space: nowrap; }
     #timeline-bar {
       position: fixed; top: 0; left: 0;
       width: calc(100vw - 270px);
@@ -239,6 +246,8 @@
   </div>
 </div>
 
+<div id="zoom-box"><canvas id="zoom-map"></canvas><div id="zoom-text"></div></div>
+
 <div id="timeline-bar"><canvas id="timeline-canvas"></canvas></div>
 
 <button id="guide-btn" title="walk through the interface (?)" aria-expanded="false">? guide</button>
@@ -251,7 +260,7 @@
   </div>
 </div>
 
-<div id="help">1 circle &middot; 2 rect &middot; 3 freeform &middot; click place &middot; drag move &middot; drag handle resize &middot; wheel rotate &middot; [ ] size &middot; backspace delete &middot; F flow &middot; G grid &middot; H help &middot; M bed &middot; space pause &middot; S save &middot; ? guide<span id="help-site"></span></div>
+<div id="help">1 circle &middot; 2 rect &middot; 3 freeform &middot; click place &middot; drag move &middot; drag handle resize &middot; wheel zoom &middot; middle-drag pan &middot; 0 unzoom &middot; shift+wheel rotate &middot; [ ] size &middot; backspace delete &middot; F flow &middot; G grid &middot; H help &middot; M bed &middot; space pause &middot; S save &middot; ? guide<span id="help-site"></span></div>
 
 <script>
 // ─────────────────────────────────────────────
@@ -318,6 +327,81 @@ let showStreaks = true;
 //   1 grid  2 grid + subdivisions  3 local highs (within 3 cells)  4 local lows  0 off
 let elevMode = 0;
 let simTime = 0;
+
+// ── View: zoom and pan ──
+// The wheel zooms the canvas up to VIEW_MAX_ZOOM about the pointer; the middle button pans
+// once zoomed in. The simulation does not change: everything keeps its place in world
+// coordinates (the canvas at 1x), and only the drawing is scaled. viewX/viewY is the world
+// point at the canvas's top-left corner. wmX/wmY is the pointer in world coordinates, which is
+// what every click, drag and hover on the scene uses.
+const VIEW_MAX_ZOOM = 10;
+const ZOOM_PER_WHEEL = 0.002;     // per pixel of wheel: one mouse notch (100) is about 1.22x
+let viewZ = 1, viewX = 0, viewY = 0;
+let wmX = 0, wmY = 0;
+let panDrag = null;
+function updatePointer() { wmX = viewX + mouseX / viewZ; wmY = viewY + mouseY / viewZ; }
+function clampView() {
+  if (viewZ <= 1.001) { viewZ = 1; viewX = 0; viewY = 0; return; }
+  viewX = constrain(viewX, 0, width - width / viewZ);
+  viewY = constrain(viewY, 0, height - height / viewZ);
+}
+// The streaks are drawn at screen resolution, so a change of view starts them afresh.
+function viewChanged() { if (trailBuffer) trailBuffer.clear(); for (const p of particles) p.lx = undefined; updatePointer(); }
+// Zoom to z, keeping the world point under screen point (sx, sy) where it is.
+function setZoom(z, sx, sy) {
+  const wx = viewX + sx / viewZ, wy = viewY + sy / viewZ;
+  viewZ = constrain(z, 1, VIEW_MAX_ZOOM);
+  viewX = wx - sx / viewZ; viewY = wy - sy / viewZ;
+  clampView(); viewChanged();
+}
+function resetView() { if (viewZ !== 1 || viewX || viewY) { viewZ = 1; viewX = 0; viewY = 0; viewChanged(); } }
+function panStart(cx, cy) { if (viewZ <= 1 || bedMode) return false; panDrag = { x: cx, y: cy, vx: viewX, vy: viewY }; return true; }
+function panMove(cx, cy) {
+  if (!panDrag) return;
+  viewX = panDrag.vx - (cx - panDrag.x) / viewZ; viewY = panDrag.vy - (cy - panDrag.y) / viewZ;
+  clampView(); viewChanged();
+}
+function panEnd() { panDrag = null; }
+// Inside push(): draw in world coordinates from here on.
+function applyView() { if (viewZ !== 1) { scale(viewZ); translate(-viewX, -viewY); } }
+// Draw fn at world point (x, y) at screen size: labels, handles and markers stay the same size
+// on screen at any zoom instead of growing with it.
+function atScreenSize(x, y, fn) { push(); translate(x, y); if (viewZ !== 1) scale(1 / viewZ); fn(); pop(); }
+
+// The thumbnail at the top left while zoomed in: the whole scene, the part on screen outlined,
+// and the zoom.
+const ZOOM_MAP_W = 180;
+function drawZoomMap() {
+  const box = document.getElementById('zoom-box');
+  if (!box) return;
+  const on = viewZ > 1;
+  const mapH = Math.round(ZOOM_MAP_W * height / width);
+  if (box.style.display !== (on ? 'block' : 'none')) box.style.display = on ? 'block' : 'none';
+  if (!on) return;
+  document.getElementById('zoom-text').textContent = 'zoom ' + viewZ.toFixed(1) + '× · middle-drag to pan · 0 resets';
+  const c = document.getElementById('zoom-map');
+  const dpr = window.devicePixelRatio || 1;
+  if (c.width !== Math.round(ZOOM_MAP_W * dpr) || c.height !== Math.round(mapH * dpr)) {
+    c.width = Math.round(ZOOM_MAP_W * dpr); c.height = Math.round(mapH * dpr);
+    c.style.width = ZOOM_MAP_W + 'px'; c.style.height = mapH + 'px';
+  }
+  const g = c.getContext('2d'), s = ZOOM_MAP_W / width;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = '#0a0a14'; g.fillRect(0, 0, ZOOM_MAP_W, mapH);
+  for (const b of [depoBuffer, bedSurface]) { const e = b && (b.elt || b.canvas); if (e) g.drawImage(e, 0, 0, ZOOM_MAP_W, mapH); }
+  g.strokeStyle = 'rgba(255,255,255,0.7)'; g.lineWidth = 1;
+  for (const ob of obstacles) {
+    if (!isObstacleActive(ob)) continue;
+    g.save(); g.scale(s, s); g.translate(ob.x, ob.y); g.rotate(ob.rotation * Math.PI / 180); g.beginPath();
+    if (ob.type === 'poly') { ob.points.forEach((p, k) => k ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y)); g.closePath(); }
+    else if (ob.type === 'circle') g.arc(0, 0, obW(ob) / 2, 0, 2 * Math.PI);
+    else g.rect(-obW(ob) / 2, -obH(ob) / 2, obW(ob), obH(ob));
+    g.restore(); g.stroke();
+  }
+  g.strokeStyle = 'rgba(255,200,100,0.95)'; g.lineWidth = 1.5;
+  g.strokeRect(viewX * s, viewY * s, width / viewZ * s, height / viewZ * s);
+  g.strokeStyle = 'rgba(255,255,255,0.25)'; g.lineWidth = 1; g.strokeRect(0.5, 0.5, ZOOM_MAP_W - 1, mapH - 1);
+}
 
 // Bed profile
 let bedMode = false;
@@ -825,19 +909,24 @@ function drawDeposition() {
 
 function drawFlowField() {
   if (!showFlow) return;
-  stroke(0,200,255,flowOpacity); strokeWeight(1.2);
-  let step = max(1, floor(min(NX,NY)/flowDensity));
-  for (let j=step; j<=NY; j+=step) {
-    for (let i=step; i<=NX; i+=step) {
+  // Zoomed in, the arrows keep their size on screen and come closer together in the world
+  // (down to one per cell), and only the cells in view are drawn.
+  const k = 1 / viewZ;
+  stroke(0,200,255,flowOpacity); strokeWeight(1.2*k);
+  let step = max(1, floor(min(NX,NY)/flowDensity/viewZ));
+  let i0 = max(step, floor(viewX/cellW/step)*step), i1 = min(NX, ceil((viewX+width*k)/cellW)+1);
+  let j0 = max(step, floor(viewY/cellH/step)*step), j1 = min(NY, ceil((viewY+height*k)/cellH)+1);
+  for (let j=j0; j<=j1; j+=step) {
+    for (let i=i0; i<=i1; i+=step) {
       let idx = IX(i,j);
       if (solid[idx]) continue;
       let px = i*cellW, py = j*cellH;
       let spd = mag(u[idx],v[idx]);
       if (spd<0.001) continue;
       let nx = u[idx]/spd, ny = v[idx]/spd;
-      let len = constrain(spd*flowScale, 8, 55);
+      let len = constrain(spd*flowScale, 8, 55)*k;
       line(px,py, px+nx*len, py+ny*len);
-      let ax=px+nx*len, ay=py+ny*len, tip=4;
+      let ax=px+nx*len, ay=py+ny*len, tip=4*k;
       line(ax,ay, ax-nx*tip-ny*tip*0.5, ay-ny*tip+nx*tip*0.5);
       line(ax,ay, ax-nx*tip+ny*tip*0.5, ay-ny*tip-nx*tip*0.5);
     }
@@ -850,21 +939,24 @@ let elevFade = new Map();
 
 function drawSpotElevations() {
   if (elevMode === 0) { if (elevFade.size) elevFade.clear(); return; }
-  let step = max(1, floor(min(NX,NY)/flowDensity));
+  // Zoomed in, the readouts come closer together in the world, as the flow arrows do.
+  let step = max(1, floor(min(NX,NY)/flowDensity/viewZ));
   let fine = max(1, floor(step/2));
-  textAlign(CENTER, BOTTOM);
+  const inView = (i, j) => { let px = i*cellW, py = j*cellH; return px >= viewX - 40 && px <= viewX + width/viewZ + 40 && py >= viewY - 20 && py <= viewY + height/viewZ + 20; };
   const put = (i, j, sz, alpha) => {
     let idx = IX(i, j);
-    if (solid[idx]) return;
+    if (solid[idx] || !inView(i, j)) return;
     let px = i*cellW, py = j*cellH;
     let z = bedZ(px, py);
     // Dark plate behind the number: over a dark, busy field 9px text at low contrast was
     // effectively invisible, which is why the readout looked broken.
-    textSize(sz);
-    let label = z.toFixed(1);
-    let tw = textWidth(label) + 4;
-    noStroke(); fill(0, 0, 0, 150 * (alpha/255)); rect(px - tw/2, py - sz - 3, tw, sz + 3);
-    fill(255,235,170, alpha); text(label, px, py - 3);
+    atScreenSize(px, py, () => {
+      textAlign(CENTER, BOTTOM); textSize(sz);
+      let label = z.toFixed(1);
+      let tw = textWidth(label) + 4;
+      noStroke(); fill(0, 0, 0, 150 * (alpha/255)); rect(-tw/2, -sz - 3, tw, sz + 3);
+      fill(255,235,170, alpha); text(label, 0, -3);
+    });
   };
 
   if (elevMode === 1) {
@@ -909,37 +1001,42 @@ function drawSpotElevations() {
 function drawGrid() { /* now inline */ }
 
 function drawObstacles() {
+  // Outlines, handles and numbers keep their size on screen when zoomed in (k is one screen
+  // pixel in world units); the shapes themselves are world-sized.
+  const k = 1 / viewZ;
+  const label = (i, ob) => atScreenSize(ob.x, ob.y, () => {
+    fill(255,255,255,220); noStroke(); textAlign(CENTER, CENTER); textSize(12); text(String(i + 1), 0, 0);
+  });
   for (let i=0; i<obstacles.length; i++) {
     let ob = obstacles[i];
     if (!isObstacleActive(ob)) continue;
 
     if (ob.type === 'poly') {
       push(); translate(ob.x, ob.y); rotate(ob.rotation*PI/180);
-      if (i===selectedIdx) { stroke(255,255,255,220); strokeWeight(2.5); }
-      else { stroke(255,255,255,140); strokeWeight(1.5); }
+      if (i===selectedIdx) { stroke(255,255,255,220); strokeWeight(2.5*k); }
+      else { stroke(255,255,255,140); strokeWeight(1.5*k); }
       noFill();
       beginShape();
       for (let p of ob.points) vertex(p.x, p.y);
       endShape(CLOSE);
       if (i===selectedIdx) {
-        stroke(255,200,100,80); strokeWeight(4);
+        stroke(255,200,100,80); strokeWeight(4*k);
         beginShape(); for (let p of ob.points) vertex(p.x, p.y); endShape(CLOSE);
-        for (let p of ob.points) { noStroke(); fill(255,200,100,230); ellipse(p.x, p.y, 8, 8); }
+        for (let p of ob.points) { noStroke(); fill(255,200,100,230); ellipse(p.x, p.y, 8*k, 8*k); }
       }
       pop();
-      fill(255,255,255,220); noStroke(); textAlign(CENTER, CENTER); textSize(12);
-      text(String(i + 1), ob.x, ob.y);
+      label(i, ob);
       continue;
     }
 
     let hw = obW(ob)/2, hh = obH(ob)/2;
     push(); translate(ob.x, ob.y); rotate(ob.rotation*PI/180);
     noFill();
-    if (i===selectedIdx) { stroke(255,255,255,220); strokeWeight(2.5); }
-    else { stroke(255,255,255,140); strokeWeight(1.5); }
+    if (i===selectedIdx) { stroke(255,255,255,220); strokeWeight(2.5*k); }
+    else { stroke(255,255,255,140); strokeWeight(1.5*k); }
     if (ob.type==='circle') ellipse(0,0,obW(ob)); else { rectMode(CENTER); rect(0,0,obW(ob),obH(ob)); }
-    if (i===selectedIdx) { stroke(255,200,100,80); strokeWeight(4); if(ob.type==='circle')ellipse(0,0,obW(ob)+6);else rect(0,0,obW(ob)+6,obH(ob)+6); }
-    stroke(255,255,255,60); strokeWeight(0.5); line(-8,0,8,0); line(0,-8,0,8);
+    if (i===selectedIdx) { stroke(255,200,100,80); strokeWeight(4*k); if(ob.type==='circle')ellipse(0,0,obW(ob)+6*k);else rect(0,0,obW(ob)+6*k,obH(ob)+6*k); }
+    stroke(255,255,255,60); strokeWeight(0.5*k); line(-8*k,0,8*k,0); line(0,-8*k,0,8*k);
     pop();
 
     if (i===selectedIdx) {
@@ -950,28 +1047,28 @@ function drawObstacles() {
       for (let h of handlePts) {
         let wx = ob.x + h[0]*cosT - h[1]*sinT;
         let wy = ob.y + h[0]*sinT + h[1]*cosT;
-        fill(255,255,255,235); stroke(255,200,100,200); strokeWeight(1); rectMode(CENTER);
-        rect(wx, wy, 9, 9);
+        fill(255,255,255,235); stroke(255,200,100,200); strokeWeight(k); rectMode(CENTER);
+        rect(wx, wy, 9*k, 9*k);
       }
     }
 
     // timeline index centered on the object (upright, not rotated)
-    fill(255,255,255,220); noStroke(); textAlign(CENTER, CENTER); textSize(12);
-    text(String(i + 1), ob.x, ob.y);
+    label(i, ob);
   }
 }
 
 function drawGhost() {
   if (ghostType === 'poly') { drawPolyPreview(); return; }
   if (paused || dragging || mouseX<0||mouseX>width||mouseY<0||mouseY>height) return;
-  let over = hitTestObstacle(mouseX,mouseY) >= 0;
-  push(); translate(mouseX,mouseY); rotate(ghostRotation*PI/180);
-  drawingContext.setLineDash([4,4]);
-  noFill(); stroke(over?'rgba(255,255,255,0.1)':'rgba(255,255,255,0.25)'); strokeWeight(1.2);
+  const k = 1 / viewZ;
+  let over = hitTestObstacle(wmX,wmY) >= 0;
+  push(); translate(wmX,wmY); rotate(ghostRotation*PI/180);
+  drawingContext.setLineDash([4*k,4*k]);
+  noFill(); stroke(over?'rgba(255,255,255,0.1)':'rgba(255,255,255,0.25)'); strokeWeight(1.2*k);
   let half=ghostSize/2;
   if (ghostType==='circle') ellipse(0,0,ghostSize); else { rectMode(CENTER); rect(0,0,ghostSize,ghostSize); }
   drawingContext.setLineDash([]);
-  stroke(255,255,255,50); strokeWeight(0.8); line(0,0,half+8,0);
+  stroke(255,255,255,50); strokeWeight(0.8*k); line(0,0,half+8*k,0);
   pop();
 }
 
@@ -995,10 +1092,14 @@ const STREAK_JUMP = 60;
 function drawParticlesToBuffer() {
   let sr=parseInt(slowColor.slice(1,3),16), sg=parseInt(slowColor.slice(3,5),16), sb=parseInt(slowColor.slice(5,7),16);
   let fr=parseInt(fastColor.slice(1,3),16), fg=parseInt(fastColor.slice(3,5),16), fb=parseInt(fastColor.slice(5,7),16);
+  // The trail buffer is screen-sized and drawn without the view, so the grains are drawn into
+  // it through the view: sharp at any zoom, and the same width on screen.
+  const k = 1 / viewZ;
+  trailBuffer.push();
+  if (viewZ !== 1) { trailBuffer.scale(viewZ); trailBuffer.translate(-viewX, -viewY); }
   if (showStreaks) {
-    trailBuffer.push();
     trailBuffer.blendMode(ADD);
-    trailBuffer.strokeWeight(Math.max(0.6, particleSize * 0.6));
+    trailBuffer.strokeWeight(Math.max(0.6, particleSize * 0.6) * k);
     for (let p of particles) {
       const lx = p.lx, ly = p.ly;
       p.lx = p.x; p.ly = p.y;
@@ -1019,8 +1120,9 @@ function drawParticlesToBuffer() {
     let speed = mag(p.vx,p.vy)/((cellW+cellH)/2);
     let t = constrain(speed/colorThresh, 0, 1);
     trailBuffer.fill(floor(sr+(fr-sr)*t), floor(sg+(fg-sg)*t), floor(sb+(fb-sb)*t), 40+t*40);
-    trailBuffer.ellipse(p.x, p.y, particleSize, particleSize);
+    trailBuffer.ellipse(p.x, p.y, particleSize*k, particleSize*k);
   }
+  trailBuffer.pop();
 }
 
 function drawParticles() {
@@ -1032,7 +1134,7 @@ function drawParticles() {
     let speed = mag(p.vx,p.vy)/((cellW+cellH)/2);
     let t = constrain(speed/colorThresh, 0, 1);
     fill(floor(sr+(fr-sr)*t), floor(sg+(fg-sg)*t), floor(sb+(fb-sb)*t), 150+t*90);
-    ellipse(p.x, p.y, particleSize, particleSize);
+    ellipse(p.x, p.y, particleSize/viewZ, particleSize/viewZ);
   }
 }
 
@@ -1342,6 +1444,15 @@ function setup() {
   let ch = windowHeight;
   let canvas = createCanvas(cw, ch);
   pixelDensity(1);
+  // The middle button pans while zoomed in. Its default (the browser's autoscroll) is
+  // cancelled on the canvas at any zoom; the move and release are heard on the window so a
+  // drag that leaves the canvas still ends.
+  const canvasEl = canvas && canvas.elt;
+  if (canvasEl && canvasEl.addEventListener) {
+    canvasEl.addEventListener('mousedown', function (e) { if (e.button !== 1) return; e.preventDefault(); panStart(e.clientX, e.clientY); });
+    window.addEventListener('mousemove', function (e) { if (panDrag) panMove(e.clientX, e.clientY); });
+    window.addEventListener('mouseup', function (e) { if (e.button === 1) panEnd(); });
+  }
 
   cellW = width / (NX + 2);
   cellH = height / (NY + 2);
@@ -1526,7 +1637,11 @@ function draw() {
     if (bedRenderAcc >= 0.5) { bedRenderAcc = 0; updateBedBuffer(); redrawDepoBuffer(); }
   }
 
+  updatePointer();
   background(10, 10, 20);
+  // The scene is drawn through the view (zoom and pan); the trails, the bed editor's strips,
+  // the site's overlays and the zoom thumbnail are drawn on the screen.
+  push(); applyView();
   image(depoBuffer, 0, 0);
 
   // Bed surface — behind trails so trails paint over it
@@ -1534,6 +1649,7 @@ function draw() {
   // what shows the elevation the particles are reacting to, and hiding it left bed mode blind.
   image(bedSurface, 0, 0);
   if (model.drawUnderlay) model.drawUnderlay();
+  pop();
 
   if (!bedMode) {
     fadeTrails();
@@ -1543,6 +1659,7 @@ function draw() {
     trailBuffer.clear();
   }
 
+  push(); applyView();
   drawFlowField();
   // Keep the bed gradient current while sediment builds up: without this the ramp was only
   // rebuilt on bed edits, so accumulation showed as dots but never as topography. The buffer
@@ -1554,20 +1671,23 @@ function draw() {
   drawSpotElevations();
   drawParticles();
   drawObstacles();
-  drawBedProfile();
   if (!bedMode) drawGhost();
-  if (timelineEnabled) drawTimeline();
 
   if (showGrid) {
-    stroke(30,30,60,80); strokeWeight(0.5);
+    const k = 1 / viewZ;
+    stroke(30,30,60,80); strokeWeight(0.5*k);
     for (let i=0;i<=NX;i++){let x=i*cellW;line(x,0,x,height);}
     for (let j=0;j<=NY;j++){let y=j*cellH;line(0,y,width,y);}
-    let ms=10; stroke(50,45,80,140); strokeWeight(1);
+    let ms=10; stroke(50,45,80,140); strokeWeight(k);
     for (let i=0;i<=NX;i+=ms){let x=i*cellW;line(x,0,x,height);}
     for (let j=0;j<=NY;j+=ms){let y=j*cellH;line(0,y,width,y);}
   }
+  pop();
 
+  drawBedProfile();
+  if (timelineEnabled) drawTimeline();
   backendFrame();
+  drawZoomMap();
   updateHUD();
 }
 
@@ -1581,6 +1701,7 @@ function windowResized() {
   // so every resize-then-reload moved the scene further off the canvas.
   stretchScene(width / ow, height / oh);
   for (const p of particles) { p.x *= width / ow; p.y *= height / oh; p.lx = undefined; }
+  viewX *= width / ow; viewY *= height / oh; clampView();   // the view stretches with the scene
   cellW = width/NX; cellH = height/NY;
   solidMaskDirty = true;
 
@@ -1632,7 +1753,7 @@ function polyToLocal(ob, wx, wy) {
 function hitPolyVertex(ob, mx, my) {
   let lp = polyToLocal(ob, mx, my);
   for (let i = 0; i < ob.points.length; i++) {
-    if (dist(lp.x, lp.y, ob.points[i].x, ob.points[i].y) < 9) return i;
+    if (dist(lp.x, lp.y, ob.points[i].x, ob.points[i].y) < 9 / viewZ) return i;
   }
   return -1;
 }
@@ -1643,7 +1764,7 @@ function getResizeHandle(idx, mx, my) {
   let th = ob.rotation * PI / 180, cosT = cos(th), sinT = sin(th);
   let dx = mx - ob.x, dy = my - ob.y;
   let lx = dx * cosT + dy * sinT, ly = -dx * sinT + dy * cosT;
-  let hw = obW(ob)/2, hh = obH(ob)/2, GRAB = 8;
+  let hw = obW(ob)/2, hh = obH(ob)/2, GRAB = 8 / viewZ;   // 8 screen pixels at any zoom
   let handles = (ob.type === 'circle')
     ? [['e', hw, 0], ['s', 0, hh], ['w', -hw, 0], ['n', 0, -hh]]
     : [['nw',-hw,-hh],['n',0,-hh],['ne',hw,-hh],['e',hw,0],['se',hw,hh],['s',0,hh],['sw',-hw,hh],['w',-hw,0]];
@@ -1683,24 +1804,26 @@ function resizeObstacle(rd, mx, my) {
 
 function drawPolyPreview() {
   if (polyPoints.length === 0) return;
-  if (polyPoints.length === 1) { noStroke(); fill(255,200,100); ellipse(polyPoints[0].x, polyPoints[0].y, 8, 8); return; }
-  noFill(); stroke(255,255,255,170); strokeWeight(1.5);
+  const k = 1 / viewZ;
+  if (polyPoints.length === 1) { noStroke(); fill(255,200,100); ellipse(polyPoints[0].x, polyPoints[0].y, 8*k, 8*k); return; }
+  noFill(); stroke(255,255,255,170); strokeWeight(1.5*k);
   beginShape();
   for (let p of polyPoints) vertex(p.x, p.y);
   endShape();
-  stroke(255,255,255,90); strokeWeight(1);
-  line(polyPoints[polyPoints.length-1].x, polyPoints[polyPoints.length-1].y, mouseX, mouseY);
+  stroke(255,255,255,90); strokeWeight(k);
+  line(polyPoints[polyPoints.length-1].x, polyPoints[polyPoints.length-1].y, wmX, wmY);
   let f = polyPoints[0];
-  let closing = polyPoints.length >= 3 && dist(mouseX, mouseY, f.x, f.y) < 12;
+  let closing = polyPoints.length >= 3 && dist(wmX, wmY, f.x, f.y) < 12*k;
   noStroke(); fill(255,200,100);
-  ellipse(f.x, f.y, closing ? 12 : 8, closing ? 12 : 8);
-  if (closing) { noFill(); stroke(255,200,100,200); strokeWeight(1.5); ellipse(f.x, f.y, 16, 16); }
+  ellipse(f.x, f.y, (closing ? 12 : 8)*k, (closing ? 12 : 8)*k);
+  if (closing) { noFill(); stroke(255,200,100,200); strokeWeight(1.5*k); ellipse(f.x, f.y, 16*k, 16*k); }
 }
 
 // ─────────────────────────────────────────────
 // INTERACTION
 // ─────────────────────────────────────────────
 function hitTestObstacle(mx, my) {
+  const m = 6 / viewZ;     // the grab margin: 6 screen pixels at any zoom
   for (let i=obstacles.length-1;i>=0;i--) {
     let ob=obstacles[i];
     if (!isObstacleActive(ob)) continue;
@@ -1709,16 +1832,16 @@ function hitTestObstacle(mx, my) {
       if (pointInPoly(lp.x, lp.y, ob.points)) return i;
       for (let k=0;k<ob.points.length;k++) {
         let a=ob.points[k], b=ob.points[(k+1)%ob.points.length];
-        if (distToSeg(lp.x, lp.y, a.x, a.y, b.x, b.y) < 6) return i;
+        if (distToSeg(lp.x, lp.y, a.x, a.y, b.x, b.y) < m) return i;
       }
       continue;
     }
     let dx=mx-ob.x, dy=my-ob.y;
-    if (ob.type==='circle') { if (dx*dx+dy*dy<=(obW(ob)/2+6)*(obW(ob)/2+6)) return i; }
+    if (ob.type==='circle') { if (dx*dx+dy*dy<=(obW(ob)/2+m)*(obW(ob)/2+m)) return i; }
     else {
       let cosA=cos(-ob.rotation*PI/180), sinA=sin(-ob.rotation*PI/180);
       let rx=dx*cosA-dy*sinA, ry=dx*sinA+dy*cosA;
-      if (abs(rx)<=obW(ob)/2+6&&abs(ry)<=obH(ob)/2+6) return i;
+      if (abs(rx)<=obW(ob)/2+m&&abs(ry)<=obH(ob)/2+m) return i;
     }
   }
   return -1;
@@ -1746,7 +1869,9 @@ function mousePressed(event) {
   if (guide.open) return;      // the guide explains the canvas; it does not let a click through
   if (event && event.target) { let t=event.target; if (t.closest('#sidebar')||t.tagName==='BUTTON'||t.id==='bed-thumb'||t.id==='timeline-canvas') return; }
   if (mouseX<0||mouseX>width||mouseY<0||mouseY>height) return;
-  if (model.pointer && model.pointer('press', mouseX, mouseY, event)) return;   // a model tool took the click
+  if ((event && event.button === 1) || mouseButton === CENTER) return;   // the middle button pans (panStart)
+  updatePointer();
+  if (model.pointer && model.pointer('press', wmX, wmY, event)) return;   // a model tool took the click
 
   if (bedMode) {
     let stripH=160, stripY=height-stripH, bedMaxZ=160;
@@ -1791,32 +1916,34 @@ function mousePressed(event) {
   }
 
   if (selectedIdx >= 0) {
-    let h = getResizeHandle(selectedIdx, mouseX, mouseY);
+    let h = getResizeHandle(selectedIdx, wmX, wmY);
     if (h) { resizeDrag = { idx: selectedIdx, handle: h }; return; }
     let sob = obstacles[selectedIdx];
     if (sob.type === 'poly') {
-      let vi = hitPolyVertex(sob, mouseX, mouseY);
+      let vi = hitPolyVertex(sob, wmX, wmY);
       if (vi >= 0) { polyVertexDrag = { idx: selectedIdx, vi: vi }; return; }
     }
   }
 
-  let hit = hitTestObstacle(mouseX, mouseY);
-  if (hit>=0) { selectedIdx=hit; selectedClip=-1; ghostRotation=obstacles[hit].rotation; ghostType=obstacles[hit].type; dragging=true; dragOffX=obstacles[hit].x-mouseX; dragOffY=obstacles[hit].y-mouseY; return; }
+  let hit = hitTestObstacle(wmX, wmY);
+  if (hit>=0) { selectedIdx=hit; selectedClip=-1; ghostRotation=obstacles[hit].rotation; ghostType=obstacles[hit].type; dragging=true; dragOffX=obstacles[hit].x-wmX; dragOffY=obstacles[hit].y-wmY; return; }
 
   if (ghostType === 'poly') {
-    if (polyPoints.length >= 3 && dist(mouseX, mouseY, polyPoints[0].x, polyPoints[0].y) < 12) {
+    if (polyPoints.length >= 3 && dist(wmX, wmY, polyPoints[0].x, polyPoints[0].y) < 12 / viewZ) {
       addPolyObstacle(polyPoints); polyPoints = [];
     } else {
-      polyPoints.push({ x: mouseX, y: mouseY });
+      polyPoints.push({ x: wmX, y: wmY });
     }
     return;
   }
-  addObstacle(mouseX,mouseY,ghostType,ghostRotation);
+  addObstacle(wmX,wmY,ghostType,ghostRotation);
 }
 
 function mouseDragged(event) {
   if (guide.open) return;
-  if (model.pointer && model.pointer('drag', mouseX, mouseY, event)) return;
+  if (panDrag) return;
+  updatePointer();
+  if (model.pointer && model.pointer('drag', wmX, wmY, event)) return;
   if (event&&event.target) { let t=event.target; if(t.closest('#sidebar')||t.id==='bed-thumb'||t.id==='timeline-canvas') return; }
   if (bedMode) {
     let stripH=160,stripY=height-stripH,bedMaxZ=160;
@@ -1838,9 +1965,9 @@ function mouseDragged(event) {
     }
     return;
   }
-  if (resizeDrag) { resizeObstacle(resizeDrag, mouseX, mouseY); return; }
-  if (polyVertexDrag) { let pv=obstacles[polyVertexDrag.idx]; let lp=polyToLocal(pv,mouseX,mouseY); pv.points[polyVertexDrag.vi]={x:lp.x,y:lp.y}; solidMaskDirty = true; return; }
-  if (dragging&&selectedIdx>=0) { obstacles[selectedIdx].x=mouseX+dragOffX; obstacles[selectedIdx].y=mouseY+dragOffY; solidMaskDirty = true; }
+  if (resizeDrag) { resizeObstacle(resizeDrag, wmX, wmY); return; }
+  if (polyVertexDrag) { let pv=obstacles[polyVertexDrag.idx]; let lp=polyToLocal(pv,wmX,wmY); pv.points[polyVertexDrag.vi]={x:lp.x,y:lp.y}; solidMaskDirty = true; return; }
+  if (dragging&&selectedIdx>=0) { obstacles[selectedIdx].x=wmX+dragOffX; obstacles[selectedIdx].y=wmY+dragOffY; solidMaskDirty = true; }
 }
 
 function mouseReleased() { dragging=false; resizeDrag=null; polyVertexDrag=null; editingLongPt=-1; editingXSStation=null; }
@@ -1852,9 +1979,24 @@ function mouseWheel(event) {
   // returning false here cancelled it, so a panel taller than the window could not scroll,
   // and the selected object turned instead.
   if (event && event.target && event.target.closest && event.target.closest('#sidebar')) return true;
-  let delta=event.delta>0?5:-5;
-  ghostRotation=(ghostRotation+delta)%360; if(ghostRotation<0)ghostRotation+=360;
-  if (selectedIdx>=0) { obstacles[selectedIdx].rotation=ghostRotation; solidMaskDirty = true; }
+  // Some browsers turn a shifted wheel into a sideways one, so take whichever axis moved.
+  let raw = (event.deltaY || event.deltaX || event.delta || 0) * (event.deltaMode === 1 ? 33 : 1);
+  if (!raw) return false;
+  // Shift + wheel turns the object (the wheel alone did, until it zoomed).
+  if (event.shiftKey) {
+    let delta=raw>0?5:-5;
+    ghostRotation=(ghostRotation+delta)%360; if(ghostRotation<0)ghostRotation+=360;
+    if (selectedIdx>=0) { obstacles[selectedIdx].rotation=ghostRotation; solidMaskDirty = true; }
+    return false;
+  }
+  // The wheel zooms about the pointer, 1x to 10x. Not in the bed editor, whose strips are
+  // drawn against the whole canvas.
+  // The pointer is read from the wheel event itself: p5's mouseX only follows mouse moves.
+  let sx = mouseX, sy = mouseY;
+  const cv = event.target && event.target.getBoundingClientRect && event.target.id && event.target.id.indexOf('defaultCanvas') === 0 ? event.target : null;
+  if (cv && event.clientX != null) { const rc = cv.getBoundingClientRect(); sx = event.clientX - rc.left; sy = event.clientY - rc.top; }
+  if (bedMode || sx<0||sx>width||sy<0||sy>height) return false;
+  setZoom(viewZ * Math.exp(-raw * ZOOM_PER_WHEEL), sx, sy);
   return false;
 }
 
@@ -1864,7 +2006,7 @@ function mouseWheel(event) {
 let bedWasPaused = true;
 function toggleBedMode() {
   if (bedMode) { bedMode = false; paused = bedWasPaused; }
-  else { bedWasPaused = paused; bedMode = true; paused = true; refreshBedGeometry(); }
+  else { bedWasPaused = paused; bedMode = true; paused = true; resetView(); refreshBedGeometry(); }
 }
 
 function keyPressed() {
@@ -1878,6 +2020,7 @@ function keyPressed() {
     // isObstacleActive keeps obstacles on (timeline off) or re-sequences them from
     // the top of the loop (timeline on) automatically.
   }
+  else if (key==='0') { resetView(); }
   else if (key==='f'||key==='F') { showFlow=!showFlow; }
   else if (key==='g'||key==='G') { showGrid=!showGrid; }
   else if (key==='h'||key==='H') { showHelp=!showHelp; }
@@ -2339,11 +2482,12 @@ const GUIDE_STEPS = [
      <p>This guide walks through each part of the screen. Use next, or the arrow keys. Close it any time with the ✕ or Esc. The model keeps running behind it.</p>` },
   { id: 'canvas', target: guideCanvas, title: 'The site', text:
     `<p>The big field is the site seen from above. Each moving point is a grain of sediment carried by the water, and its color shifts as it speeds up or slows down.</p>
-     <p>Where the water slows, grains drop and stay. Those are the deposits, the marks that build up over time. Where the water speeds up it can lift them again. Most of what you learn here comes from watching where deposits gather and where they get scoured away.</p>` },
+     <p>Where the water slows, grains drop and stay. Those are the deposits, the marks that build up over time. Where the water speeds up it can lift them again. Most of what you learn here comes from watching where deposits gather and where they get scoured away.</p>
+     <p>Turn the mouse wheel to zoom in on one spot, up to ten times closer. Hold the middle button and drag to move around while you are zoomed in. A small map at the top left shows where you are, and the <b>0</b> key takes you back out.</p>` },
   { id: 'draw', target: guideCanvas, title: 'Placing objects', text:
     `<p>An object is anything solid you put in the water. A boulder, a pier, a groyne, a planted island, a wall. The water has to go around it, and the sediment shows you what that does.</p>
      <p>Press <b>1</b> for a circle, <b>2</b> for a rectangle or <b>3</b> for a freeform shape, then click on the site to place it. For a freeform shape, click each corner, then click the first corner again to close it.</p>
-     <p>Click an object to select it. Drag it to move it, drag a handle to resize it, and turn the mouse wheel to rotate it. <b>[</b> and <b>]</b> change the size of the next one, and Backspace deletes the one you selected.</p>
+     <p>Click an object to select it. Drag it to move it, drag a handle to resize it, and hold Shift while you turn the mouse wheel to rotate it. <b>[</b> and <b>]</b> change the size of the next one, and Backspace deletes the one you selected.</p>
      <p>Then watch. Sediment usually piles up in the slow water behind an object and gets scoured away beside it, where the water squeezes past.</p>` },
   { id: 'tabs', target: '#site-tabs', title: 'Models and scenes', text:
     `<p>Each tab is a different model of moving water. River is a channel with water flowing through it. Coast is a beach with waves coming in from the sea. Click a tab to switch.</p>

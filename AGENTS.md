@@ -130,9 +130,9 @@ and the simulation was dead along with every listener attached after the throw.
 
 The harness loads the page the way a browser does (inline script, then `model.js`, then
 `site.js`, one scope), mocks p5 and the DOM, and asserts on model state rather than pixels.
-76 checks:
+77 checks:
 
-- **Interface** (`dev/headless_harness.js`, 56): `setup()` completes, the draw loop advances
+- **Interface** (`dev/headless_harness.js`, 57): `setup()` completes, the draw loop advances
   time, sediment moves, a transect edits the bed, every visible strip is clickable, the bed
   editor works through the real mouse handlers (bed mode restores the pause state, a click
   lands at the elevation under the pointer, drags stop at the range, a signed range goes
@@ -152,7 +152,9 @@ The harness loads the page the way a browser does (inline script, then `model.js
   so a save after it comes back in place, a model's own view toggles are saved with the scene
   (`viewState()` / `applyViewState()`), a model can size a grain's deposit and lifting the
   grain takes back the same amount (`rules.depositAmount()`), the wheel scrolls the sidebar
-  and turns an object only over the canvas, nothing goes non-finite.
+  and over the canvas zooms (Shift turns an object), the zoom goes 1x to 10x about the pointer
+  with clicks landing where they point, the middle button pans inside the scene, the
+  thumbnail shows the zoom, and 0 or the bed editor reset it, nothing goes non-finite.
 - **River model** (`dev/model_checks.js`, 13): the scene carries the inflow, sediment travels downstream, friction slows
   the field, the friction brush adds and subtracts, still water stays still, leftover motion
   stays bounded, and the bed is in the flow (see below).

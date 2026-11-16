@@ -39,8 +39,12 @@
 //                                     toggle is off, the choice saved), and a resize stretching
 //                                     the scene so a save after it comes back in place, and a
 //                                     model's own view toggles saved with the scene
-//  9e. the sidebar scrolls          — the wheel scrolls the sidebar, turns objects only over the
-//                                     canvas; p5 configured after it loads
+//  9e. the sidebar scrolls          — the wheel scrolls the sidebar, zooms the canvas, turns
+//                                     objects with shift; p5 configured after it loads
+//  9f. zoom and pan                 — the wheel zooms 1x-10x about the pointer, clicks land in
+//                                     world coordinates, the middle button pans inside the
+//                                     scene, the thumbnail shows the zoom, 0 and the bed editor
+//                                     reset it
 //  10. the site's own checks        — dev/site_checks.js, if there is one
 //  11. nothing has gone non-finite
 //
@@ -1080,23 +1084,99 @@ try {
 }
 
 // ---------------------------------------------------------------- 9e. the sidebar scrolls
-// The wheel over the sidebar scrolls it; over the canvas it turns the object. The handler used
-// to cancel every wheel event on the page, so a sidebar taller than the window (the coast's)
-// could not scroll. And p5 is told to skip its friendly errors only after it has loaded.
+// The wheel over the sidebar scrolls it; over the canvas it zooms, and with shift it turns the
+// object. The handler used to cancel every wheel event on the page, so a sidebar taller than
+// the window (the coast's) could not scroll. And p5 is told to skip its friendly errors only
+// after it has loaded.
 {
   const inSide = { closest: (q) => (q === '#sidebar' ? {} : null), id: 'x' };
   const onCanvas = { closest: () => null, id: 'defaultCanvas0' };
+  globalThis.mouseX = 300; globalThis.mouseY = 200;
   const r0 = app.run("ghostRotation");
-  const side = app.run("mouseWheel")({ target: inSide, delta: 100 });
-  const r1 = app.run("ghostRotation");
-  const canv = app.run("mouseWheel")({ target: onCanvas, delta: 100 });
-  const r2 = app.run("ghostRotation");
+  const side = app.run("mouseWheel")({ target: inSide, delta: 100, deltaY: 100 });
+  const r1 = app.run("ghostRotation"), z1 = app.run("viewZ");
+  const canv = app.run("mouseWheel")({ target: onCanvas, delta: 100, deltaY: 100, shiftKey: true });
+  const r2 = app.run("ghostRotation"), z2 = app.run("viewZ");
+  // Shift + wheel in a browser that makes it a sideways wheel.
+  const sideways = app.run("mouseWheel")({ target: onCanvas, delta: 0, deltaY: 0, deltaX: 100, shiftKey: true });
+  const r3 = app.run("ghostRotation");
   app.run(`ghostRotation = ${r0}`);
   const p5At = html.indexOf('p5.min.js'), feAt = html.indexOf('p5.disableFriendlyErrors');
   const css = (html.match(/#sidebar\s*\{[^}]*\}/) || [''])[0];
-  check(side === true && r1 === r0 && canv === false && r2 !== r0 && p5At > 0 && feAt > p5At && /overflow-y:\s*auto/.test(css),
-        "the wheel scrolls the sidebar and turns the object only over the canvas; p5 is configured after it loads",
-        `over the sidebar returns ${side} (rotation ${r0} -> ${r1}), over the canvas ${canv} (-> ${r2}); p5 script at ${p5At}, friendly-errors line at ${feAt}`);
+  check(side === true && r1 === r0 && z1 === 1 && canv === false && r2 !== r0 && z2 === 1 && sideways === false && r3 !== r2 &&
+        p5At > 0 && feAt > p5At && /overflow-y:\s*auto/.test(css),
+        "the wheel scrolls the sidebar, shift + wheel turns the object over the canvas; p5 is configured after it loads",
+        `over the sidebar returns ${side} (rotation ${r0} -> ${r1}, zoom ${z1}), shift over the canvas ${canv} (-> ${r2}, zoom ${z2}), sideways shift -> ${r3}; p5 script at ${p5At}, friendly-errors line at ${feAt}`);
+}
+
+// ---------------------------------------------------------------- 9f. zoom and pan
+// The wheel zooms the view 1x to 10x about the pointer, a click while zoomed lands on the world
+// point under it, the middle button pans and the view stays inside the scene, the thumbnail
+// shows while zoomed with the zoom written under it, and 0 or the bed editor go back to 1x.
+{
+  const onCanvas = { closest: () => null, id: 'defaultCanvas0' };
+  const W = app.run("width"), H = app.run("height");
+  const wheel = (dy, x, y) => { globalThis.mouseX = x; globalThis.mouseY = y; return app.run("mouseWheel")({ target: onCanvas, delta: dy, deltaY: dy }); };
+  app.setPaused(true); app.run("resetView()");
+  const obs0 = JSON.parse(JSON.stringify(app.run("obstacles"))), sel0 = app.run("selectedIdx"), rot0 = app.run("ghostRotation");
+  // One notch in at (300, 200): the world point under the pointer stays under it.
+  wheel(-100, 300, 200);
+  const z1 = app.run("viewZ"), under1 = [app.run("viewX") + 300 / z1, app.run("viewY") + 200 / z1];
+  for (let i = 0; i < 30; i++) wheel(-100, 300, 200);
+  const zMax = app.run("viewZ"), under2 = [app.run("viewX") + 300 / zMax, app.run("viewY") + 200 / zMax];
+  const anchored = Math.abs(under1[0] - 300) < 1e-6 && Math.abs(under1[1] - 200) < 1e-6 && Math.abs(under2[0] - 300) < 1e-6 && Math.abs(under2[1] - 200) < 1e-6;
+  // A click at screen (100, 100) places a circle at the world point under it.
+  app.run("obstacles.length = 0; selectedIdx = -1; ghostType = 'circle'; polyPoints = []");
+  globalThis.mouseX = 100; globalThis.mouseY = 100;
+  const vx = app.run("viewX"), vy = app.run("viewY");
+  app.run("mousePressed")({ button: 0 }); app.run("mouseReleased")();
+  const placed = app.run("obstacles")[0];
+  const clickOk = !!placed && Math.abs(placed.x - (vx + 100 / zMax)) < 1e-6 && Math.abs(placed.y - (vy + 100 / zMax)) < 1e-6;
+  // The middle button does not place anything (pressed over empty water, not the new circle).
+  globalThis.mouseX = 600; globalThis.mouseY = 500;
+  app.run("mousePressed")({ button: 1 }); app.run("mouseReleased")();
+  const midNone = app.run("obstacles.length") === 1;
+  // A click 4 screen pixels outside the circle's edge still picks it (the grab margin is in
+  // screen pixels), 12 outside does not.
+  const r = placed.w / 2;
+  app.run("selectedIdx = -1");
+  globalThis.mouseX = 100 + (r * zMax + 4); globalThis.mouseY = 100; app.run("updatePointer()");
+  const near = app.run("hitTestObstacle(wmX, wmY)");
+  globalThis.mouseX = 100 + (r * zMax + 12); app.run("updatePointer()");
+  const far = app.run("hitTestObstacle(wmX, wmY)");
+  // Pan: a 100 px middle-drag moves the view 10 world px; a huge one stops at the edge.
+  app.run("panStart(500, 500); panMove(400, 450)");
+  const pvx = app.run("viewX"), pvy = app.run("viewY");
+  const panOk = Math.abs(pvx - (vx + 100 / zMax)) < 1e-6 && Math.abs(pvy - (vy + 50 / zMax)) < 1e-6;
+  app.run("panMove(-1e6, -1e6); panEnd()");
+  const edge = Math.abs(app.run("viewX") - (W - W / zMax)) < 1e-6 && Math.abs(app.run("viewY") - (H - H / zMax)) < 1e-6;
+  app.run("panStart(0, 0); panMove(1e6, 1e6); panEnd()");
+  const edge0 = app.run("viewX") === 0 && app.run("viewY") === 0;
+  // The thumbnail and the zoom written under it.
+  app.run("drawZoomMap()");
+  const el = (id) => app.run(`document.getElementById('${id}')`);
+  const mapOn = el('zoom-box').style.display === 'block' && /zoom 10\.0\u00d7/.test(el('zoom-text').textContent);
+  // Zooming out all the way returns to 1x with no offset; 0 resets; the bed editor resets and
+  // its wheel does not zoom.
+  for (let i = 0; i < 40; i++) wheel(100, 300, 200);
+  const out = app.run("viewZ") === 1 && app.run("viewX") === 0 && app.run("viewY") === 0;
+  app.run("drawZoomMap()");
+  const mapOff = el('zoom-box').style.display === 'none';
+  wheel(-300, 300, 200); globalThis.key = "0"; app.keyPressed();
+  const key0 = app.run("viewZ") === 1;
+  wheel(-300, 300, 200); app.run("toggleBedMode()");
+  const bedReset = app.run("viewZ") === 1; wheel(-300, 300, 200);
+  const bedNoZoom = app.run("viewZ") === 1; app.run("toggleBedMode()");
+  const markup = /id="zoom-box"/.test(html) && /id="zoom-map"/.test(html) && /id="zoom-text"/.test(html);
+  // Put the scene back.
+  app.run("resetView(); drawZoomMap()");
+  app.setObstacles(obs0); app.run(`selectedIdx = ${sel0}; ghostRotation = ${rot0}; solidMaskDirty = true`);
+  check(Math.abs(z1 - Math.exp(100 * app.run("ZOOM_PER_WHEEL"))) < 1e-9 && zMax === 10 && anchored && clickOk && midNone &&
+        near === 0 && far === -1 && panOk && edge && edge0 && mapOn && out && mapOff && key0 && bedReset && bedNoZoom && markup,
+        "the wheel zooms 1x-10x about the pointer, clicks land where they point, the middle button pans inside the scene, the thumbnail shows the zoom",
+        `one notch ${z1.toFixed(3)}x, max ${zMax}x, pointer anchored ${anchored}; click placed ${clickOk}, middle places nothing ${midNone}; ` +
+        `grab 4 px out ${near}, 12 px out ${far}; pan ${panOk}, stops at the edges ${edge}/${edge0}; thumbnail ${mapOn}/${mapOff}; ` +
+        `out to 1x ${out}; 0 resets ${key0}; bed editor resets ${bedReset}, no zoom in it ${bedNoZoom}; markup ${markup}`);
 }
 
 // ---------------------------------------------------------------- 10. the site's own checks
