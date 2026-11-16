@@ -699,6 +699,27 @@ try {
     check(n.slope >= P * 0.9 && n.chance >= P * 0.9 && n.boost >= P * 0.9, "sediment's response to the bed comes from the model's rules when it has them", `${P} particles: slope ${n.slope}, bed settle ${n.chance}, boost ${n.boost}`);
     app.setBedPoints(savedBed); app.rebuildUserBedGrid();
   }
+
+  {
+    // A model can size a grain's deposit (the coast ties it to model time). The grain keeps
+    // its amount, so when the water lifts it again the bed loses what it gained.
+    const res = withHook(m.rules, "depositAmount", () => 10, () => app.run(`(() => {
+      const keep = { depo: depoGrid.slice(), dep: deposited.slice(), parts: particles.slice(), et: erosionThresh, ep: erosionProb };
+      const i = Math.floor(GW / 2), j = Math.floor(GH / 2), q = j * GW + i;
+      const before = depoGrid[q];
+      deposited.length = 0;
+      settleParticle({ x: (i + 0.5) * DEPO_CELL, y: (j + 0.5) * DEPO_CELL }, 0);
+      const added = depoGrid[q] - before, amt = deposited.length === 1 ? deposited[0].amt : null;
+      particles = []; erosionThresh = -1; erosionProb = 1;
+      updateParticles();
+      const back = depoGrid[q] - before, lifted = deposited.length === 0;
+      depoGrid.set(keep.depo); deposited = keep.dep; particles = keep.parts; erosionThresh = keep.et; erosionProb = keep.ep;
+      return { added, amt, back, lifted };
+    })()`));
+    check(Math.abs(res.added - 5) < 1e-6 && res.amt === 10 && res.lifted && Math.abs(res.back) < 1e-6,
+          "a model can size a grain's deposit, and lifting the grain takes back the same amount",
+          `deposit 10 -> ${res.added.toFixed(2)} at the centre (half), kept ${res.amt}, after lifting ${res.back.toFixed(3)}`);
+  }
 }
 
 // ---------------------------------------------------------------- 8. the model's own checks

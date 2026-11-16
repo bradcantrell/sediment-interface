@@ -611,8 +611,11 @@ function initParticles() {
 }
 
 function settleParticle(p, bedHere) {
-  deposited.push({ x: p.x, y: p.y, z: bedHere, born: simTime });
-  addDeposit(p.x, p.y, DEPO_AMOUNT);   // raise the bed where sediment settles
+  // A model may size a grain's deposit (the coast ties it to model time); the grain keeps
+  // that amount, so lifting it again takes back what it put down.
+  const amt = (model.rules && model.rules.depositAmount) ? model.rules.depositAmount(p) : DEPO_AMOUNT;
+  deposited.push({ x: p.x, y: p.y, z: bedHere, born: simTime, amt });
+  addDeposit(p.x, p.y, amt);   // raise the bed where sediment settles
 }
 
 function updateParticles() {
@@ -779,7 +782,7 @@ function updateParticles() {
       let bedHere2 = bedPoints.length >= 2 ? bedZ(d.x, d.y) : 0;
       let resist = bedHere2 > 0 ? 1.0/(1.0 + (bedHere2/160)*2.0) : 1.0;
       if (random() > resist) continue;
-      addDeposit(d.x, d.y, -DEPO_AMOUNT);   // erode accumulated bed height
+      addDeposit(d.x, d.y, -(d.amt != null ? d.amt : DEPO_AMOUNT));   // erode accumulated bed height
       particles.push({ x: d.x+random(-3,3), y: d.y+random(-3,3), vx: vel.vx+random(-0.5,0.5), vy: vel.vy+random(-0.5,0.5), born: simTime });
       deposited.splice(i, 1);
     }
@@ -2195,6 +2198,7 @@ function updateTimelineVisibility() {
 //     controls.stats                  // markup for an extra line in the stats block
 //     rules.slope(p, gradX, gradY, bedHere, vel), rules.bedSettleChance(bedHere, settleProb, p),
 //     rules.settleBoost(bedHere, p)   // replace the default sediment responses to the bed
+//     rules.depositAmount(p)          // bed height a settling grain adds (default DEPO_AMOUNT)
 //   });
 //
 // The contract between the two is the flow grid: NX x NY cells plus a one-cell border,
