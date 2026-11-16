@@ -39,6 +39,8 @@
 //                                     toggle is off, the choice saved), and a resize stretching
 //                                     the scene so a save after it comes back in place, and a
 //                                     model's own view toggles saved with the scene
+//  9e. the sidebar scrolls          — the wheel scrolls the sidebar, turns objects only over the
+//                                     canvas; p5 configured after it loads
 //  10. the site's own checks        — dev/site_checks.js, if there is one
 //  11. nothing has gone non-finite
 //
@@ -1075,6 +1077,26 @@ try {
   if (hadVS) app.run("model").viewState = hadVS;
   if (hadAVS) app.run("model").applyViewState = hadAVS;
   global.__store.clear(); app.setPaused(true);
+}
+
+// ---------------------------------------------------------------- 9e. the sidebar scrolls
+// The wheel over the sidebar scrolls it; over the canvas it turns the object. The handler used
+// to cancel every wheel event on the page, so a sidebar taller than the window (the coast's)
+// could not scroll. And p5 is told to skip its friendly errors only after it has loaded.
+{
+  const inSide = { closest: (q) => (q === '#sidebar' ? {} : null), id: 'x' };
+  const onCanvas = { closest: () => null, id: 'defaultCanvas0' };
+  const r0 = app.run("ghostRotation");
+  const side = app.run("mouseWheel")({ target: inSide, delta: 100 });
+  const r1 = app.run("ghostRotation");
+  const canv = app.run("mouseWheel")({ target: onCanvas, delta: 100 });
+  const r2 = app.run("ghostRotation");
+  app.run(`ghostRotation = ${r0}`);
+  const p5At = html.indexOf('p5.min.js'), feAt = html.indexOf('p5.disableFriendlyErrors');
+  const css = (html.match(/#sidebar\s*\{[^}]*\}/) || [''])[0];
+  check(side === true && r1 === r0 && canv === false && r2 !== r0 && p5At > 0 && feAt > p5At && /overflow-y:\s*auto/.test(css),
+        "the wheel scrolls the sidebar and turns the object only over the canvas; p5 is configured after it loads",
+        `over the sidebar returns ${side} (rotation ${r0} -> ${r1}), over the canvas ${canv} (-> ${r2}); p5 script at ${p5At}, friendly-errors line at ${feAt}`);
 }
 
 // ---------------------------------------------------------------- 10. the site's own checks
