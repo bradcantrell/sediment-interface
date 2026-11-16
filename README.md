@@ -7,7 +7,7 @@ A browser-based sediment-flow sandbox and **OpenFOAM case exporter**. Draw a bed
 - **Real-time 2D flow** — a Stam fluid solver with sediment particles (deposition + erosion) and an aggrading bed. The bed is in the flow: water speeds up over a drawn rise or a deposit and slows over a hollow, conserving discharge.
 - **Bed profile editor** — draw a longitudinal profile and transverse cross-sections; the bed surface is carved into the exported mesh.
 - **Obstacle choreography** — place circles, rectangles, and freeform polygons, sequenced on a looping timeline.
-- **Zoom** — the mouse wheel zooms in on the pointer, up to 10x, and the middle button pans. A thumbnail at the top left shows where you are and how far in. Shift and the wheel rotate the selected object; `0` zooms back out.
+- **Zoom** — the mouse wheel zooms in on the pointer, up to 10x. The middle button pans, and so do Alt (Option) with a drag and the arrow keys. A thumbnail at the top left shows where you are and how far in. Shift and the wheel rotate the selected object; `0` zooms back out.
 - **Model tabs** — switch between the river and the coast from the top of the sidebar. Each keeps its own scene in your browser, so coming back finds it as you left it.
 - **OpenFOAM export** — builds a full case (`blockMeshDict`, `snappyHexMeshDict`, boundary + initial fields, obstacle and bed STLs) and downloads it as a ZIP. The ZIP runs on your own machine with `sh Allrun` (OpenFOAM 14) and carries the scene as `scene.json`.
 - **Open a scene** — the `open` button reads `scene.json`, or the exported ZIP itself, and puts the drawing and settings back.

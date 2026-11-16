@@ -260,7 +260,7 @@
   </div>
 </div>
 
-<div id="help">1 circle &middot; 2 rect &middot; 3 freeform &middot; click place &middot; drag move &middot; drag handle resize &middot; wheel zoom &middot; middle-drag pan &middot; 0 unzoom &middot; shift+wheel rotate &middot; [ ] size &middot; backspace delete &middot; F flow &middot; G grid &middot; H help &middot; M bed &middot; space pause &middot; S save &middot; ? guide<span id="help-site"></span></div>
+<div id="help">1 circle &middot; 2 rect &middot; 3 freeform &middot; click place &middot; drag move &middot; drag handle resize &middot; wheel zoom &middot; middle-drag, Alt-drag or arrows pan &middot; 0 unzoom &middot; shift+wheel rotate &middot; [ ] size &middot; backspace delete &middot; F flow &middot; G grid &middot; H help &middot; M bed &middot; space pause &middot; S save &middot; ? guide<span id="help-site"></span></div>
 
 <script>
 // ─────────────────────────────────────────────
@@ -362,6 +362,25 @@ function panMove(cx, cy) {
   clampView(); viewChanged();
 }
 function panEnd() { panDrag = null; }
+// The middle button, or Alt (Option on a Mac) with the left button, pans: a trackpad or a
+// mouse without a middle button can pan too. The browser's middle-click autoscroll is
+// cancelled on the canvas at any zoom.
+function canvasMouseDown(e) {
+  if (e.button === 1) { e.preventDefault(); panStart(e.clientX, e.clientY); }
+  else if (e.button === 0 && e.altKey && panStart(e.clientX, e.clientY)) e.preventDefault();
+}
+// The arrow keys pan too, held down for a steady glide (not while a slider or field has the
+// keys, and not while the guide is open, where they turn its pages).
+const PAN_KEY_SPEED = 12;          // screen pixels per frame
+function panKeys() {
+  if (viewZ <= 1 || bedMode || (typeof guide !== 'undefined' && guide.open)) return;
+  const a = document.activeElement;
+  if (a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName || '')) return;
+  const dx = (keyIsDown(39) ? 1 : 0) - (keyIsDown(37) ? 1 : 0), dy = (keyIsDown(40) ? 1 : 0) - (keyIsDown(38) ? 1 : 0);
+  if (!dx && !dy) return;
+  viewX += dx * PAN_KEY_SPEED / viewZ; viewY += dy * PAN_KEY_SPEED / viewZ;
+  clampView(); viewChanged();
+}
 // Inside push(): draw in world coordinates from here on.
 function applyView() { if (viewZ !== 1) { scale(viewZ); translate(-viewX, -viewY); } }
 // Draw fn at world point (x, y) at screen size: labels, handles and markers stay the same size
@@ -378,7 +397,7 @@ function drawZoomMap() {
   const mapH = Math.round(ZOOM_MAP_W * height / width);
   if (box.style.display !== (on ? 'block' : 'none')) box.style.display = on ? 'block' : 'none';
   if (!on) return;
-  document.getElementById('zoom-text').textContent = 'zoom ' + viewZ.toFixed(1) + '× · middle-drag to pan · 0 resets';
+  document.getElementById('zoom-text').textContent = 'zoom ' + viewZ.toFixed(1) + '× · pan: middle-drag, Alt-drag or arrows · 0 resets';
   const c = document.getElementById('zoom-map');
   const dpr = window.devicePixelRatio || 1;
   if (c.width !== Math.round(ZOOM_MAP_W * dpr) || c.height !== Math.round(mapH * dpr)) {
@@ -1444,14 +1463,13 @@ function setup() {
   let ch = windowHeight;
   let canvas = createCanvas(cw, ch);
   pixelDensity(1);
-  // The middle button pans while zoomed in. Its default (the browser's autoscroll) is
-  // cancelled on the canvas at any zoom; the move and release are heard on the window so a
-  // drag that leaves the canvas still ends.
+  // Panning while zoomed in (canvasMouseDown). The move and release are heard on the window
+  // so a drag that leaves the canvas still ends.
   const canvasEl = canvas && canvas.elt;
   if (canvasEl && canvasEl.addEventListener) {
-    canvasEl.addEventListener('mousedown', function (e) { if (e.button !== 1) return; e.preventDefault(); panStart(e.clientX, e.clientY); });
+    canvasEl.addEventListener('mousedown', canvasMouseDown);
     window.addEventListener('mousemove', function (e) { if (panDrag) panMove(e.clientX, e.clientY); });
-    window.addEventListener('mouseup', function (e) { if (e.button === 1) panEnd(); });
+    window.addEventListener('mouseup', function () { panEnd(); });
   }
 
   cellW = width / (NX + 2);
@@ -1637,6 +1655,7 @@ function draw() {
     if (bedRenderAcc >= 0.5) { bedRenderAcc = 0; updateBedBuffer(); redrawDepoBuffer(); }
   }
 
+  panKeys();
   updatePointer();
   background(10, 10, 20);
   // The scene is drawn through the view (zoom and pan); the trails, the bed editor's strips,
@@ -1869,7 +1888,7 @@ function mousePressed(event) {
   if (guide.open) return;      // the guide explains the canvas; it does not let a click through
   if (event && event.target) { let t=event.target; if (t.closest('#sidebar')||t.tagName==='BUTTON'||t.id==='bed-thumb'||t.id==='timeline-canvas') return; }
   if (mouseX<0||mouseX>width||mouseY<0||mouseY>height) return;
-  if ((event && event.button === 1) || mouseButton === CENTER) return;   // the middle button pans (panStart)
+  if ((event && event.button === 1) || mouseButton === CENTER || panDrag) return;   // a pan, not a click (canvasMouseDown)
   updatePointer();
   if (model.pointer && model.pointer('press', wmX, wmY, event)) return;   // a model tool took the click
 
@@ -2483,7 +2502,7 @@ const GUIDE_STEPS = [
   { id: 'canvas', target: guideCanvas, title: 'The site', text:
     `<p>The big field is the site seen from above. Each moving point is a grain of sediment carried by the water, and its color shifts as it speeds up or slows down.</p>
      <p>Where the water slows, grains drop and stay. Those are the deposits, the marks that build up over time. Where the water speeds up it can lift them again. Most of what you learn here comes from watching where deposits gather and where they get scoured away.</p>
-     <p>Turn the mouse wheel to zoom in on one spot, up to ten times closer. Hold the middle button and drag to move around while you are zoomed in. A small map at the top left shows where you are, and the <b>0</b> key takes you back out.</p>` },
+     <p>Turn the mouse wheel, or slide two fingers on a trackpad, to zoom in on one spot, up to ten times closer. Turn it back to zoom out. To move around while you are zoomed in, hold the middle button and drag. Without a middle button, hold Alt (Option on a Mac) and drag, or use the arrow keys. A small map at the top left shows where you are, and the <b>0</b> key takes you back out.</p>` },
   { id: 'draw', target: guideCanvas, title: 'Placing objects', text:
     `<p>An object is anything solid you put in the water. A boulder, a pier, a groyne, a planted island, a wall. The water has to go around it, and the sediment shows you what that does.</p>
      <p>Press <b>1</b> for a circle, <b>2</b> for a rectangle or <b>3</b> for a freeform shape, then click on the site to place it. For a freeform shape, click each corner, then click the first corner again to close it.</p>

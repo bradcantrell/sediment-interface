@@ -42,8 +42,8 @@
 //  9e. the sidebar scrolls          — the wheel scrolls the sidebar, zooms the canvas, turns
 //                                     objects with shift; p5 configured after it loads
 //  9f. zoom and pan                 — the wheel zooms 1x-10x about the pointer, clicks land in
-//                                     world coordinates, the middle button pans inside the
-//                                     scene, the thumbnail shows the zoom, 0 and the bed editor
+//                                     world coordinates, the middle button (or Alt + drag, or
+//                                     the arrows) pans inside the scene, the thumbnail shows the zoom, 0 and the bed editor
 //                                     reset it
 //  10. the site's own checks        — dev/site_checks.js, if there is one
 //  11. nothing has gone non-finite
@@ -1152,6 +1152,26 @@ try {
   const edge = Math.abs(app.run("viewX") - (W - W / zMax)) < 1e-6 && Math.abs(app.run("viewY") - (H - H / zMax)) < 1e-6;
   app.run("panStart(0, 0); panMove(1e6, 1e6); panEnd()");
   const edge0 = app.run("viewX") === 0 && app.run("viewY") === 0;
+  // Without a middle button: Alt + left drag pans and places nothing, and the arrow keys pan
+  // (not while a slider has the keys).
+  app.run("viewX = 100; viewY = 100");
+  let prevented = 0;
+  const nObs = app.run("obstacles.length");
+  app.run("canvasMouseDown")({ button: 0, altKey: true, clientX: 300, clientY: 300, preventDefault: () => { prevented++; } });
+  globalThis.mouseX = 300; globalThis.mouseY = 300; app.run("mousePressed")({ button: 0, altKey: true });
+  app.run("panMove(200, 250)"); app.run("mouseReleased")(); app.run("panEnd()");
+  const altOk = prevented === 1 && app.run("obstacles.length") === nObs && Math.abs(app.run("viewX") - 110) < 1e-6 && Math.abs(app.run("viewY") - 105) < 1e-6;
+  const kd0 = globalThis.keyIsDown;
+  globalThis.keyIsDown = (c) => c === 39 || c === 40;
+  app.run("panKeys()");
+  const sp = app.run("PAN_KEY_SPEED") / zMax;
+  const arrowsOk = Math.abs(app.run("viewX") - (110 + sp)) < 1e-6 && Math.abs(app.run("viewY") - (105 + sp)) < 1e-6;
+  const ae = app.run("document").activeElement;
+  app.run("document").activeElement = { tagName: 'INPUT' };
+  app.run("panKeys()");
+  const sliderKeeps = Math.abs(app.run("viewX") - (110 + sp)) < 1e-6;
+  app.run("document").activeElement = ae;
+  globalThis.keyIsDown = kd0;
   // The thumbnail and the zoom written under it.
   app.run("drawZoomMap()");
   const el = (id) => app.run(`document.getElementById('${id}')`);
@@ -1172,10 +1192,10 @@ try {
   app.run("resetView(); drawZoomMap()");
   app.setObstacles(obs0); app.run(`selectedIdx = ${sel0}; ghostRotation = ${rot0}; solidMaskDirty = true`);
   check(Math.abs(z1 - Math.exp(100 * app.run("ZOOM_PER_WHEEL"))) < 1e-9 && zMax === 10 && anchored && clickOk && midNone &&
-        near === 0 && far === -1 && panOk && edge && edge0 && mapOn && out && mapOff && key0 && bedReset && bedNoZoom && markup,
-        "the wheel zooms 1x-10x about the pointer, clicks land where they point, the middle button pans inside the scene, the thumbnail shows the zoom",
+        near === 0 && far === -1 && panOk && edge && edge0 && altOk && arrowsOk && sliderKeeps && mapOn && out && mapOff && key0 && bedReset && bedNoZoom && markup,
+        "the wheel zooms 1x-10x about the pointer, clicks land where they point, the middle button, Alt + drag and the arrows pan inside the scene, the thumbnail shows the zoom",
         `one notch ${z1.toFixed(3)}x, max ${zMax}x, pointer anchored ${anchored}; click placed ${clickOk}, middle places nothing ${midNone}; ` +
-        `grab 4 px out ${near}, 12 px out ${far}; pan ${panOk}, stops at the edges ${edge}/${edge0}; thumbnail ${mapOn}/${mapOff}; ` +
+        `grab 4 px out ${near}, 12 px out ${far}; pan ${panOk}, stops at the edges ${edge}/${edge0}, Alt-drag ${altOk}, arrows ${arrowsOk}, not from a slider ${sliderKeeps}; thumbnail ${mapOn}/${mapOff}; ` +
         `out to 1x ${out}; 0 resets ${key0}; bed editor resets ${bedReset}, no zoom in it ${bedNoZoom}; markup ${markup}`);
 }
 

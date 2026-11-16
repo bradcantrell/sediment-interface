@@ -153,8 +153,8 @@ The harness loads the page the way a browser does (inline script, then `model.js
   (`viewState()` / `applyViewState()`), a model can size a grain's deposit and lifting the
   grain takes back the same amount (`rules.depositAmount()`), the wheel scrolls the sidebar
   and over the canvas zooms (Shift turns an object), the zoom goes 1x to 10x about the pointer
-  with clicks landing where they point, the middle button pans inside the scene, the
-  thumbnail shows the zoom, and 0 or the bed editor reset it, nothing goes non-finite.
+  with clicks landing where they point, the middle button, Alt + drag and the
+  arrow keys pan inside the scene, the thumbnail shows the zoom, and 0 or the bed editor reset it, nothing goes non-finite.
 - **River model** (`dev/model_checks.js`, 13): the scene carries the inflow, sediment travels downstream, friction slows
   the field, the friction brush adds and subtracts, still water stays still, leftover motion
   stays bounded, and the bed is in the flow (see below).
