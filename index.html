@@ -633,15 +633,18 @@ function xsVxToAbs(mouseXPos, sx, w, baseZ) {
   return lo + (1 - (mouseXPos - sx) / w) * XS_WINDOW;
 }
 
+// Past the outermost cell centres both grids hold their edge value. They read 0 there, so on
+// the coast a drawn bed was dry along the offshore edge of the XBeach export (2026-11-17).
+function gridAt(g, x, y) {
+  let fx = Math.min(Math.max(x / DEPO_CELL - 0.5, 0), GW - 1), fy = Math.min(Math.max(y / DEPO_CELL - 0.5, 0), GH - 1);
+  let i = Math.min(Math.floor(fx), GW - 2), j = Math.min(Math.floor(fy), GH - 2);
+  let tx = fx - i, ty = fy - j;
+  let a = g[j * GW + i], b = g[j * GW + i + 1], c = g[(j + 1) * GW + i], d = g[(j + 1) * GW + i + 1];
+  return (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
+}
 function userBedZ(x, y) {
   if (!userBedGrid || bedPoints.length < 2) return (model && model.defaultBedZ) ? model.defaultBedZ(x, y) : 0;
-  let fx = x / DEPO_CELL - 0.5, fy = y / DEPO_CELL - 0.5;
-  let i = Math.floor(fx), j = Math.floor(fy);
-  if (i < 0 || j < 0 || i >= GW - 1 || j >= GH - 1) return 0;
-  let tx = fx - i, ty = fy - j;
-  let a = userBedGrid[j * GW + i], b = userBedGrid[j * GW + i + 1];
-  let c = userBedGrid[(j + 1) * GW + i], d = userBedGrid[(j + 1) * GW + i + 1];
-  return (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
+  return gridAt(userBedGrid, x, y);
 }
 
 // Rebuild the cached bed grid from the exact (slow) interpolation.
@@ -665,13 +668,7 @@ function bedZ(x, y) {
 
 function depoZ(x, y) {
   if (!depoGrid) return 0;
-  let fx = x / DEPO_CELL - 0.5, fy = y / DEPO_CELL - 0.5;
-  let i = Math.floor(fx), j = Math.floor(fy);
-  if (i < 0 || j < 0 || i >= GW - 1 || j >= GH - 1) return 0;
-  let tx = fx - i, ty = fy - j;
-  let a = depoGrid[j * GW + i], b = depoGrid[j * GW + i + 1];
-  let c = depoGrid[(j + 1) * GW + i], d = depoGrid[(j + 1) * GW + i + 1];
-  return (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
+  return gridAt(depoGrid, x, y);
 }
 
 function addDeposit(x, y, amt) {
