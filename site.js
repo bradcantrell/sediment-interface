@@ -14,33 +14,6 @@
   document.head.appendChild(s);
 })();
 
-function decodePngToHeights(dataUrl) {
-  return new Promise(function (resolve) {
-    try {
-      const img = new Image();
-      img.onload = function () {
-        const c = document.createElement('canvas');
-        c.width = img.width; c.height = img.height;
-        const ctx = c.getContext('2d');
-        ctx.drawImage(img, 0, 0);
-        const d = ctx.getImageData(0, 0, img.width, img.height).data;
-        const h = [];
-        for (let y = 0; y < img.height; y++) {
-          const row = [];
-          for (let x = 0; x < img.width; x++) {
-            const idx = (y * img.width + x) * 4;
-            row.push((0.299 * d[idx] + 0.587 * d[idx + 1] + 0.114 * d[idx + 2]) / 255);
-          }
-          h.push(row);
-        }
-        resolve(h);
-      };
-      img.onerror = function () { resolve(null); };
-      img.src = dataUrl;
-    } catch (e) { resolve(null); }
-  });
-}
-
 // The steps shown after an export. They are the same with or without a drawn bed: the bed
 // travels as constant/triSurface/bed.stl and snappyHexMesh carves it along with the obstacles.
 // This used to tell the user to run `python3 apply_bed.py` when a bed was exported. The case
@@ -51,10 +24,12 @@ function exportRunHint(meta) {
          '. "open" reads scene.json or the ZIP back in.';
 }
 
-// What the case generator is given: the drawn scene, and the scene file that is packed
-// beside the case as scene.json so the interface can open it again.
+// What the case generator is given: the drawn scene, the deposit as the flow sees it (bed
+// units on the deposit grid, the same numbers depoZ() reads), and the scene file that is
+// packed beside the case as scene.json so the interface can open it again.
 function exportCaseState() {
   const state = sceneState();
+  if (depoGrid) state.deposit = { grid: Array.from(depoGrid), gw: GW, gh: GH, cell: DEPO_CELL };
   state.sceneText = sceneFileText();
   return state;
 }
@@ -68,11 +43,7 @@ async function exportToOpenFOAM() {
   }
   try {
     btn.textContent = 'PACKING...';
-    let heightsPng = null;
-    try { heightsPng = await decodePngToHeights(depoBuffer.elt.toDataURL('image/png')); }
-    catch (e) { heightsPng = null; }
     const state = exportCaseState();
-    state.heightsPng = heightsPng;
     const { files, meta } = SedimentCaseGenerator.generateCase(state);
     const zipBytes = SedimentCaseGenerator.buildZip(files);
     const blob = new Blob([zipBytes], { type: 'application/zip' });

@@ -59,7 +59,7 @@ describes the layers and the testing rules.
 
 ## Domain
 
-The exported domain is a 12.8 m × 5.77 m × 2.0 m channel. A drawn bed maps to up to 0.5 m of relief, carved by `snappyHexMesh` from `constant/triSurface/bed.stl`.
+The exported domain is a channel 12.8 m long and 2.0 m deep, as wide as the canvas is tall at the same scale (5.77 m on a 1280 × 577 canvas). Obstacles, the drawn bed and the deposit keep the positions they have on the page. A drawn bed maps to up to 0.5 m of relief, and the deposit is added on top, carved by `snappyHexMesh` from `constant/triSurface/bed.stl`.
 
 ## License
 

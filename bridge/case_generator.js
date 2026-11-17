@@ -11,12 +11,17 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  // ── Domain mapping (identical to case_generator.py) ──
+  // ── Domain mapping ──
+  // The channel is always DOMAIN_W long. Its width follows the canvas: one scale factor maps
+  // canvas pixels to metres in both directions (see domainFor), so the case has the shape of
+  // the drawn scene at any window size. On the reference canvas (1280 x 577) 1 px = 0.01 m and
+  // the domain is 12.8 x 5.77 m. (This once used the reference scale for the obstacles whatever
+  // the canvas, and rescaled only the bed.)
   const CANVAS_W = 1280;
   const CANVAS_H = 577;
-  const SCALE = 0.01;            // 1 px = 0.01 m
+  const SCALE = 0.01;            // 1 px = 0.01 m on the reference canvas
   const DOMAIN_W = CANVAS_W * SCALE; // 12.8 m
-  const DOMAIN_H = CANVAS_H * SCALE; // 5.77 m
+  const DOMAIN_H = CANVAS_H * SCALE; // 5.77 m on the reference canvas
   const DOMAIN_D = 2.0;          // channel depth (m) — deep enough for bed relief
   const NX_BG = 200;
   const NY_BG = 110;
@@ -26,7 +31,20 @@
   const NX_STL = 100;            // bed STL grid (coarser than CFD mesh -> smaller export)
   const NY_STL = 55;
 
-  function pxToM(px) { return px * SCALE; }
+  // The case's geometry for a canvas of width x height px: the scale, the domain, the mesh
+  // counts across it (cells keep their reference size), and the one mapping from canvas
+  // pixels (y down) to domain metres (y up).
+  function domainFor(width, height) {
+    const cw = width > 0 ? width : CANVAS_W, ch = height > 0 ? height : CANVAS_H;
+    const s = DOMAIN_W / cw;
+    const h = ch * s;
+    return {
+      canvasW: cw, canvasH: ch, s: s, w: DOMAIN_W, h: h, d: DOMAIN_D,
+      nx: NX_BG, ny: Math.max(4, Math.round(NY_BG * h / DOMAIN_H)), nz: NZ_BG,
+      nxStl: NX_STL, nyStl: Math.max(2, Math.round(NY_STL * h / DOMAIN_H)),
+      toDomain: function (x, y) { return [x * s, (ch - y) * s]; },
+    };
+  }
 
   // ── Number formatting (Python-compatible) ──
   // Python "%.6e"  →  mantissa d.dddddd, exponent e±XX (sign always, 2+ digits)
@@ -194,9 +212,9 @@
   }
 
   // ── Dictionary generators ──
-  function blockMeshDict() {
-    const w = DOMAIN_W, h = DOMAIN_H, d = DOMAIN_D;
-    const nx = NX_BG, ny = NY_BG, nz = NZ_BG;
+  function blockMeshDict(dom) {
+    const w = dom.w, h = dom.h, d = dom.d;
+    const nx = dom.nx, ny = dom.ny, nz = dom.nz;
     return foamFile(HDR_V1912, 'dictionary', 'blockMeshDict') +
       '\n' +
       'scale 1;\n' +
@@ -406,11 +424,13 @@
       '// No feature edges extracted\n';
   }
 
-  // ── Boundary entries for obstacle patches ──
-  function obstacleEntries(obstacles, bcType, bcValue) {
+  // ── Boundary entries for the wall patches snappyHexMesh adds ──
+  // walls: the patch names, obstacle0.. and bed. Every patch in the mesh needs an entry in
+  // every field. (bed had none, so a case with a bed stopped at foamRun's first read.)
+  function obstacleEntries(walls, bcType, bcValue) {
     const lines = [];
-    for (let i = 0; i < obstacles.length; i++) {
-      lines.push('    obstacle' + i);
+    for (let i = 0; i < walls.length; i++) {
+      lines.push('    ' + walls[i]);
       lines.push('    {');
       if (bcValue) {
         lines.push('        type            ' + bcType + ';');
@@ -423,7 +443,7 @@
     return lines.join('\n');
   }
 
-  function snappyHexMeshDict(obstacles, hasBed) {
+  function snappyHexMeshDict(obstacles, hasBed, loc) {
     const stlNames = [];
     for (let i = 0; i < obstacles.length; i++) {
       stlNames.push('    obstacle' + i + ' { type triSurfaceMesh; file "obstacle' + i + '.stl"; }');
@@ -480,7 +500,7 @@
       refinementBlock + '\n' +
       '    }\n' +
       '\n' +
-      '    locationInMesh (' + fmtF(DOMAIN_W / 2, 4) + ' ' + fmtF(DOMAIN_H / 2, 4) + ' ' + fmtF(DOMAIN_D / 2, 4) + ');\n' +
+      '    locationInMesh (' + fmtF(loc[0], 4) + ' ' + fmtF(loc[1], 4) + ' ' + fmtF(loc[2], 4) + ');\n' +
       '}\n' +
       '\n' +
       'snapControls\n' +
@@ -680,13 +700,14 @@
       };
     });
 
-    // Bed (optional) — carved by snappyHexMesh from bed.stl
-    const bedProfile = state.bed_profile || [];
-    const bedXsections = state.bed_xsections || [];
-    const hasBed = bedProfile.length >= 2;
-    const bed = hasBed
-      ? profileToHeights(bedProfile, NX_STL, NY_STL, DOMAIN_W, DOMAIN_H, 0.02, state.heightsPng || null, bedXsections, state.width, state.height)
-      : null;
+    const dom = domainFor(state.width, state.height);
+
+    // Bed (a drawn bed, a deposit, or both), carved by snappyHexMesh from bed.stl
+    const bed = sceneBedHeights(state, dom);
+    const hasBed = !!bed;
+    let bedTop = 0;
+    if (bed) for (const row of bed) for (const z of row) if (z > bedTop) bedTop = z;
+    const loc = meshSeedPoint(obstacles, dom, bedTop);
 
     const files = [];
     const add = function (path, content) { files.push({ path: path, content: content }); };
@@ -695,8 +716,8 @@
     add('system/controlDict', controlDict(1000, 100));
     add('system/fvSchemes', fvSchemes());
     add('system/fvSolution', fvSolution());
-    add('system/blockMeshDict', blockMeshDict());
-    add('system/snappyHexMeshDict', snappyHexMeshDict(obstacles, hasBed));
+    add('system/blockMeshDict', blockMeshDict(dom));
+    add('system/snappyHexMeshDict', snappyHexMeshDict(obstacles, hasBed, loc));
     add('system/surfaceFeatureExtractDict', surfaceFeatureExtractDict());
 
     // constant/
@@ -708,42 +729,32 @@
     const zMin = -0.005, zMax = DOMAIN_D + 0.005;
     for (let i = 0; i < obstacles.length; i++) {
       const ob = obstacles[i];
-      const cxM = pxToM(ob.x);
-      const cyM = pxToM(DOMAIN_H / SCALE - ob.y); // flip y
+      const c = dom.toDomain(ob.x, ob.y);
       let stl;
       if (ob.type === 'circle') {
-        const rM = pxToM((ob.w || ob.size) / 2);
-        stl = stlCircle(cxM, cyM, rM, zMin, zMax);
+        stl = stlCircle(c[0], c[1], (ob.w || ob.size) / 2 * dom.s, zMin, zMax);
       } else if (ob.type === 'poly') {
-        const a = ob.rotation * Math.PI / 180;
-        const cosA = Math.cos(a), sinA = Math.sin(a);
-        const ptsM = [];
-        for (const pt of ob.points) {
-          const px = pt.x, py = pt.y;
-          const wx = ob.x + px * cosA - py * sinA;
-          const wy = ob.y + px * sinA + py * cosA;
-          ptsM.push([pxToM(wx), pxToM(DOMAIN_H / SCALE - wy)]);
-        }
-        stl = stlPolygon(ptsM, zMin, zMax);
+        stl = stlPolygon(polyWorldPoints(ob).map(function (p) { return dom.toDomain(p[0], p[1]); }), zMin, zMax);
       } else {
-        const hw = pxToM((ob.w || ob.size) / 2);
-        const hh = pxToM((ob.h || ob.size) / 2);
-        stl = stlRect(cxM, cyM, hw, hh, ob.rotation, zMin, zMax);
+        // The canvas's y runs down, the domain's up: a rotation on the canvas is the same
+        // angle the other way in the domain.
+        stl = stlRect(c[0], c[1], (ob.w || ob.size) / 2 * dom.s, (ob.h || ob.size) / 2 * dom.s, -ob.rotation, zMin, zMax);
       }
       add('constant/triSurface/obstacle' + i + '.stl', stl);
     }
 
     // 0/ fields
     const uIn = String(state.inflow != null ? state.inflow : 2.5);
-    add('0/U', initialU(obstacles, uIn));
-    add('0/p', initialP(obstacles));
-    add('0/k', initialK(obstacles));
-    add('0/epsilon', initialEpsilon(obstacles));
-    add('0/nut', initialNut(obstacles));
+    const walls = obstacles.map(function (o, i) { return 'obstacle' + i; }).concat(hasBed ? ['bed'] : []);
+    add('0/U', initialU(walls, uIn));
+    add('0/p', initialP(walls));
+    add('0/k', initialK(walls));
+    add('0/epsilon', initialEpsilon(walls));
+    add('0/nut', initialNut(walls));
 
     // Bed files
     if (hasBed) {
-      add('constant/triSurface/bed.stl', bedToSTL(bed, DOMAIN_W, DOMAIN_H));
+      add('constant/triSurface/bed.stl', bedToSTL(bed, dom.w, dom.h));
       add('README.md', readmeMd(true));
     } else {
       add('README.md', readmeMd(false));
@@ -756,10 +767,11 @@
     return {
       files: files,
       meta: {
-        nx: NX_BG, ny: NY_BG, nz: NZ_BG,
-        domainW: DOMAIN_W, domainH: DOMAIN_H, domainD: DOMAIN_D,
+        nx: dom.nx, ny: dom.ny, nz: dom.nz,
+        domainW: dom.w, domainH: dom.h, domainD: dom.d, scale: dom.s,
+        locationInMesh: loc,
         nObstacles: obstacles.length,
-        hasBed: (state.bed_profile || []).length >= 2
+        hasBed: hasBed
       }
     };
   }
@@ -878,104 +890,125 @@
   // bed_profile: [{x,z}] px; bed_xsections: [{x, points:[{y,z}]}]
   // heightsPng: 2D [ny][nx] in [0..1] (optional, decoded from depo PNG)
   // Returns [ny][nx] heights in meters.
-  function profileToHeights(bedProfile, nx, ny, domainW, domainH, maxDepth, heightsPng, bedXsections, canvasW, canvasH) {
-    const canvasPxW = CANVAS_W;      // reference canvas width (px) the domain was derived from
-    const canvasPxH = CANVAS_H;      // reference canvas height (px)
-    const reliefScale = MAX_BED_RELIEF / DESIGN_STRIP_PX;  // strip px -> meters of relief
-    const xScale = canvasW ? canvasPxW / canvasW : 1;      // actual canvas px -> reference px
-    const yScale = canvasH ? canvasPxH / canvasH : 1;
-    const points = (bedProfile || []).map(function (p) { return { x: p.x * xScale, z: p.z }; });
-    const xsections = (bedXsections || []).map(function (xs) {
-      return { x: xs.x * xScale, points: (xs.points || []).map(function (p) { return { y: p.y * yScale, z: p.z }; }) };
-    });
-
-    if (points.length < 2) {
-      if (heightsPng) {
-        const out = [];
-        for (let y = 0; y < ny; y++) {
-          const row = [];
-          for (let x = 0; x < nx; x++) row.push(heightsPng[y][x] * maxDepth);
-          out.push(row);
-        }
-        return out;
+  // ── The bed, as the interface has it ──
+  // The same bed the page's flow sees: the drawn long profile with each station's cross-section
+  // (computeUserBedZ / getStationZ in index.html, ported here), held to the river's 0..160 px
+  // relief, plus the deposit grid (depoZ). A station with no cross-section is flat across, and
+  // the bed fades between neighbouring stations, as on the page. Returns [ny][nx] heights in
+  // metres at the STL nodes (row 0 is the domain's y = 0, the canvas's bottom edge), or null
+  // when there is neither a drawn bed nor any deposit.
+  // (This once interpolated only between stations that had a cross-section, holding a single
+  // section along the whole channel; did not flip y; and read the deposit from the brightness
+  // of the top-left 100 x 55 pixels of the deposit image.)
+  const BED_RELIEF_MAX_PX = 160;   // the river's clamp on the drawn bed (model.js)
+  function stationZ(station, sections, y) {
+    const xs = sections.find(function (q) { return q.x === station.x; });
+    if (!xs || !xs.points || xs.points.length < 2) return station.z;
+    const pts = xs.points.slice().sort(function (a, b) { return a.y - b.y; });
+    if (y <= pts[0].y) return station.z + pts[0].z;
+    if (y >= pts[pts.length - 1].y) return station.z + pts[pts.length - 1].z;
+    for (let k = 0; k < pts.length - 1; k++) {
+      if (pts[k].y <= y && y <= pts[k + 1].y) {
+        const t = (y - pts[k].y) / (pts[k + 1].y - pts[k].y);
+        return station.z + pts[k].z + t * (pts[k + 1].z - pts[k].z);
       }
-      const flat = [];
-      for (let y = 0; y < ny; y++) { flat.push(new Array(nx).fill(0.0)); }
-      return flat;
     }
-
-    const sortedPts = points.slice().sort(function (a, b) { return a.x - b.x; });
-
-    // per-station y→z interpolators
-    const stationMap = {};
-    for (const xs of xsections) {
-      const sx = xs.x;
-      const ptsList = (xs.points || []).slice().sort(function (a, b) { return a.y - b.y; });
-      if (ptsList.length < 2) continue;
-      stationMap[sx] = function (yPx) {
-        if (yPx <= ptsList[0].y) return ptsList[0].z;
-        if (yPx >= ptsList[ptsList.length - 1].y) return ptsList[ptsList.length - 1].z;
-        for (let k = 0; k < ptsList.length - 1; k++) {
-          if (ptsList[k].y <= yPx && yPx <= ptsList[k + 1].y) {
-            const t = (yPx - ptsList[k].y) / (ptsList[k + 1].y - ptsList[k].y);
-            return ptsList[k].z + t * (ptsList[k + 1].z - ptsList[k].z);
-          }
-        }
-        return 0;
-      };
+    return station.z;
+  }
+  function userBedZ(stations, sections, x, y) {
+    if (stations.length < 2) return 0;
+    if (x <= stations[0].x) return stationZ(stations[0], sections, y);
+    const last = stations[stations.length - 1];
+    if (x >= last.x) return stationZ(last, sections, y);
+    for (let k = 0; k < stations.length - 1; k++) {
+      const a = stations[k], b = stations[k + 1];
+      if (a.x <= x && x <= b.x) {
+        const t = b.x > a.x ? (x - a.x) / (b.x - a.x) : 0;
+        const za = stationZ(a, sections, y);
+        return za + t * (stationZ(b, sections, y) - za);
+      }
     }
-
-    const stationXs = Object.keys(stationMap).map(Number).sort(function (a, b) { return a - b; });
-
-    const bed = [];
+    return 0;
+  }
+  function depositZ(dep, x, y) {
+    if (!dep || !dep.grid || !(dep.gw > 1) || !(dep.gh > 1)) return 0;
+    const cell = dep.cell || 4;
+    // Clamped to the grid, so the domain's edges carry the deposit next to them.
+    const fx = Math.min(dep.gw - 1, Math.max(0, x / cell - 0.5));
+    const fy = Math.min(dep.gh - 1, Math.max(0, y / cell - 0.5));
+    const i = Math.min(dep.gw - 2, Math.floor(fx)), j = Math.min(dep.gh - 2, Math.floor(fy));
+    const tx = fx - i, ty = fy - j, g = dep.grid, W = dep.gw;
+    const a = g[j * W + i], b = g[j * W + i + 1], c = g[(j + 1) * W + i], d = g[(j + 1) * W + i + 1];
+    return (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
+  }
+  function sceneBedHeights(state, dom) {
+    const stations = (state.bed_profile || []).slice().sort(function (a, b) { return a.x - b.x; });
+    const sections = state.bed_xsections || [];
+    const dep = state.deposit || null;
+    let anyDeposit = false;
+    if (dep && dep.grid) for (let k = 0; k < dep.grid.length; k++) if (dep.grid[k] > 0) { anyDeposit = true; break; }
+    if (stations.length < 2 && !anyDeposit) return null;
+    const mPerPx = MAX_BED_RELIEF / DESIGN_STRIP_PX;   // bed units -> metres of relief
+    const nx = dom.nxStl, ny = dom.nyStl, bed = [];
     for (let j = 0; j < ny; j++) {
-      const yPx = j * canvasPxH / ny;
+      const y = dom.canvasH - j * dom.canvasH / (ny - 1);  // node j sits at domain y = j * h / (ny - 1)
       const row = [];
       for (let i = 0; i < nx; i++) {
-        const xPx = i * canvasPxW / nx;
-
-        let zLong;
-        if (xPx <= sortedPts[0].x) zLong = sortedPts[0].z;
-        else if (xPx >= sortedPts[sortedPts.length - 1].x) zLong = sortedPts[sortedPts.length - 1].z;
-        else {
-          zLong = sortedPts[0].z;
-          for (let k = 0; k < sortedPts.length - 1; k++) {
-            if (sortedPts[k].x <= xPx && xPx <= sortedPts[k + 1].x) {
-              const t = (xPx - sortedPts[k].x) / (sortedPts[k + 1].x - sortedPts[k].x);
-              zLong = sortedPts[k].z + t * (sortedPts[k + 1].z - sortedPts[k].z);
-              break;
-            }
-          }
-        }
-
-        let zRel = 0;
-        if (stationXs.length) {
-          if (xPx <= stationXs[0]) zRel = stationMap[stationXs[0]](yPx);
-          else if (xPx >= stationXs[stationXs.length - 1]) zRel = stationMap[stationXs[stationXs.length - 1]](yPx);
-          else {
-            for (let k = 0; k < stationXs.length - 1; k++) {
-              if (stationXs[k] <= xPx && xPx <= stationXs[k + 1]) {
-                const t = (xPx - stationXs[k]) / (stationXs[k + 1] - stationXs[k]);
-                const za = stationMap[stationXs[k]](yPx);
-                const zb = stationMap[stationXs[k + 1]](yPx);
-                zRel = za + t * (zb - za);
-                break;
-              }
-            }
-          }
-        }
-
-        let h = Math.min(MAX_BED_RELIEF, Math.max(0, (zLong + zRel) * reliefScale));
-        if (heightsPng) h += heightsPng[j][i] * maxDepth;
-        row.push(h);
+        const x = i * dom.canvasW / (nx - 1);
+        const z = Math.min(BED_RELIEF_MAX_PX, Math.max(0, userBedZ(stations, sections, x, y))) + depositZ(dep, x, y);
+        row.push(z * mPerPx);
       }
       bed.push(row);
     }
     return bed;
   }
 
+  // ── The point snappyHexMesh keeps the mesh around ──
+  // snappyHexMesh keeps the region that holds locationInMesh. Fixed at the domain centre, an
+  // obstacle drawn there made it keep only the inside of the obstacle: no inlet, no outlet,
+  // and checkMesh still said OK. The point is now looked for from the inlet end, clear of every
+  // obstacle by two background cells and above the bed; if there is none the export fails.
+  function polyWorldPoints(ob) {
+    const a = (ob.rotation || 0) * Math.PI / 180, cosA = Math.cos(a), sinA = Math.sin(a);
+    return (ob.points || []).map(function (p) { return [ob.x + p.x * cosA - p.y * sinA, ob.y + p.x * sinA + p.y * cosA]; });
+  }
+  function nearObstacle(ob, x, y, m) {
+    const dx = x - ob.x, dy = y - ob.y;
+    if (ob.type === 'circle') return Math.hypot(dx, dy) < (ob.w || ob.size) / 2 + m;
+    if (ob.type === 'poly') {
+      const pts = polyWorldPoints(ob);
+      let inside = false;
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1];
+        if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+        const ex = xj - xi, ey = yj - yi, L2 = ex * ex + ey * ey;
+        const t = L2 > 0 ? Math.max(0, Math.min(1, ((x - xi) * ex + (y - yi) * ey) / L2)) : 0;
+        if (Math.hypot(x - (xi + t * ex), y - (yi + t * ey)) < m) return true;
+      }
+      return inside;
+    }
+    const a = (ob.rotation || 0) * Math.PI / 180;
+    const lx = dx * Math.cos(a) + dy * Math.sin(a), ly = -dx * Math.sin(a) + dy * Math.cos(a);
+    return Math.abs(lx) < (ob.w || ob.size) / 2 + m && Math.abs(ly) < (ob.h || ob.size) / 2 + m;
+  }
+  function meshSeedPoint(obstacles, dom, bedTop) {
+    if (bedTop > dom.d - 0.1) throw new Error('the bed fills the channel (' + bedTop.toFixed(2) + ' m of ' + dom.d + ' m)');
+    const z = (bedTop + dom.d) / 2;
+    const m = 2 * (dom.w / dom.nx) / dom.s;            // two background cells, in canvas px
+    const xs = [0.03, 0.06, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.97];
+    const ys = [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8, 0.1, 0.9, 0.05, 0.95];
+    for (const fx of xs) for (const fy of ys) {
+      const x = fx * dom.canvasW, y = fy * dom.canvasH;
+      if (!obstacles.some(function (ob) { return nearObstacle(ob, x, y, m); })) {
+        const p = dom.toDomain(x, y);
+        return [p[0], p[1], z];
+      }
+    }
+    throw new Error('no point in the channel is clear of the obstacles, so the mesh has nowhere to start');
+  }
+
   // ── Bed heightfield → triangulated STL surface (for snappyHexMesh snapping) ──
-  // bed: [ny][nx] heights in meters. Returns ASCII STL (top of bed at z=0, bed dips to -h).
+  // bed: [ny][nx] heights in metres above the channel floor, row j at y = j * domainH / (ny - 1).
   function bedToSTL(bed, domainW, domainH) {
     const ny = bed.length, nx = bed[0].length;
     const tris = [];
@@ -1019,6 +1052,12 @@
       '}\n' +
       'step blockMesh\n' +
       'step snappyHexMesh -overwrite\n' +
+      '# snappyHexMesh keeps one connected region. If it is not the channel (an obstacle that\n' +
+      '# closes it off), the mesh has no inlet or outlet and the run would mean nothing.\n' +
+      'for patch in inlet outlet; do\n' +
+      '  n=$(awk -v p="$patch" \'$1 == p { f = 1 } f && $1 == "nFaces" { sub(";", "", $2); print $2; exit }\' constant/polyMesh/boundary)\n' +
+      '  if [ -z "$n" ] || [ "$n" -eq 0 ]; then echo "the mesh has no $patch: an obstacle closes the channel off, see log.snappyHexMesh" >&2; exit 1; fi\n' +
+      'done\n' +
       'step foamRun -solver incompressibleFluid\n' +
       'echo "done. Open the result with:  paraFoam   (or paraview, after: touch case.foam)"\n';
   }
@@ -1051,7 +1090,9 @@
   return {
     generateCase: generateCase,
     buildZip: buildZip,
-    profileToHeights: profileToHeights,
+    domainFor: domainFor,
+    sceneBedHeights: sceneBedHeights,
+    meshSeedPoint: meshSeedPoint,
     bedToSTL: bedToSTL,
     readmeMd: readmeMd,
     crc32: crc32,

@@ -117,8 +117,15 @@ vendors `index.html` and the interface harness.
 - `site.js` — the EXPORT CASE button; packs `sceneState()` into a case and downloads a ZIP.
 - `bridge/case_generator.js` — builds the OpenFOAM 14 case (blockMeshDict,
   snappyHexMeshDict, fields, obstacle/bed STLs). Loaded by `site.js`.
-- Export domain: 12.8 m x 5.77 m x 2.0 m channel; the drawn bed maps to at most 0.5 m of
-  relief (160 px).
+- Export domain: a 12.8 m long, 2.0 m deep channel whose width follows the canvas (one scale,
+  12.8 m / canvas width, for both directions; 5.77 m on the 1280 x 577 reference canvas).
+  `domainFor()` holds the one pixel-to-metre mapping (y flipped). The bed is the page's own
+  (`sceneBedHeights()` ports `computeUserBedZ`/`getStationZ`, clamped to 0..160, plus the
+  deposit grid `site.js` passes); 160 bed units are 0.5 m. `locationInMesh` is searched for
+  from the inlet end, clear of every obstacle; Allrun stops if the mesh has no inlet or outlet.
+  All of this was wrong until the 2026-11-17 stress test (obstacles at the reference scale,
+  bed mirrored, rotations mirrored, seed fixed at the centre, deposit read from image
+  brightness).
 
 ## Testing
 
