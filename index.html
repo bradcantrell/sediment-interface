@@ -709,7 +709,11 @@ function isInsideObstacle(px, py) {
   return false;
 }
 
-function initParticles() {
+// keepSand: the grains in the water now give their sand back to the model first (see
+// particleLost). A restart (R) clears the deposits and the model's sediment with them and
+// passes false.
+function initParticles(keepSand = true) {
+  if (keepSand && model.particleLost) for (const p of particles) model.particleLost(p);
   particles = []; deposited = [];
   for (let i = 0; i < particleCount; i++) particles.push(model.spawnParticle());
 }
@@ -775,7 +779,10 @@ function updateParticles() {
 
 
     let age = simTime - (p.born||0);
-    if (p.x < 0 || p.x > width || p.y < 0 || p.y > height || age > MAX_PARTICLE_AGE) { particles.splice(i,1); continue; }
+    if (p.x < 0 || p.x > width || p.y < 0 || p.y > height || age > MAX_PARTICLE_AGE) {
+      if (model.particleLost) model.particleLost(p);   // a model that conserves sand takes it back
+      particles.splice(i,1); continue;
+    }
     let hitObstacle = false;
     if (isInsideObstacle(p.x, p.y)) {
       for (let ob of obstacles) {
@@ -886,8 +893,10 @@ function updateParticles() {
       let bedHere2 = bedPoints.length >= 2 ? bedZ(d.x, d.y) : 0;
       let resist = bedHere2 > 0 ? 1.0/(1.0 + (bedHere2/160)*2.0) : 1.0;
       if (random() > resist) continue;
-      addDeposit(d.x, d.y, -(d.amt != null ? d.amt : DEPO_AMOUNT));   // erode accumulated bed height
-      particles.push({ x: d.x+random(-3,3), y: d.y+random(-3,3), vx: vel.vx+random(-0.5,0.5), vy: vel.vy+random(-0.5,0.5), born: simTime });
+      const amt = d.amt != null ? d.amt : DEPO_AMOUNT;
+      addDeposit(d.x, d.y, -amt);   // erode accumulated bed height
+      // The lifted grain carries the sand it took back (load), so it puts the same down again.
+      particles.push({ x: d.x+random(-3,3), y: d.y+random(-3,3), vx: vel.vx+random(-0.5,0.5), vy: vel.vy+random(-0.5,0.5), born: simTime, load: amt });
       deposited.splice(i, 1);
     }
   }
@@ -1546,7 +1555,7 @@ function setup() {
   document.getElementById('flow-scale').addEventListener('input', function(){flowScale=parseInt(this.value);document.getElementById('flow-scale-val').textContent=flowScale;});
   document.getElementById('flow-dens').addEventListener('input', function(){flowDensity=parseInt(this.value);document.getElementById('flow-dens-val').textContent=flowDensity;});
   document.getElementById('flow-opacity').addEventListener('input', function(){flowOpacity=parseInt(this.value);document.getElementById('flow-opacity-val').textContent=flowOpacity;});
-  document.getElementById('particle-count').addEventListener('input', function(){particleCount=parseInt(this.value);document.getElementById('particle-count-val').textContent=particleCount;while(particles.length+deposited.length<particleCount)particles.push(spawnParticle());});
+  document.getElementById('particle-count').addEventListener('input', function(){particleCount=parseInt(this.value);document.getElementById('particle-count-val').textContent=particleCount;while(particles.length+deposited.length<particleCount)particles.push(model.spawnParticle());});
   document.getElementById('depo-size').addEventListener('input', function(){ depoSize=parseFloat(this.value); document.getElementById('depo-size-val').textContent=depoSize; redrawDepoBuffer(); });
   // Clicking a sidebar control leaves focus on it, so a following Space re-activates the
   // button (or nudges a slider) instead of reaching p5's keyPressed and toggling pause.
@@ -2053,7 +2062,7 @@ function toggleBedMode() {
 function keyPressed() {
   if (guide.open) return;      // while the guide is open its keys come first and nothing else moves
   if (key==='r'||key==='R') {
-    simTime=0; restartFlow(false); initParticles(); depoBuffer.clear(); trailBuffer.clear(); deposited=[];
+    simTime=0; restartFlow(false); initParticles(false); depoBuffer.clear(); trailBuffer.clear(); deposited=[];
     if (depoGrid) depoGrid.fill(0);
     if (model.bedChanged) model.bedChanged();
     bedSurface.clear(); updateBedBuffer();
@@ -2389,7 +2398,12 @@ function updateTimelineVisibility() {
 //     controls.stats                  // markup for an extra line in the stats block
 //     rules.slope(p, gradX, gradY, bedHere, vel), rules.bedSettleChance(bedHere, settleProb, p),
 //     rules.settleBoost(bedHere, p)   // replace the default sediment responses to the bed
-//     rules.depositAmount(p)          // bed height a settling grain adds (default DEPO_AMOUNT)
+//     rules.depositAmount(p)          // bed height a settling grain adds (default DEPO_AMOUNT);
+//                                     // a grain lifted from the bed carries p.load, the amount
+//                                     // it took back
+//     particleLost(p) {}              // a grain left the canvas or aged out without settling
+//                                     // (or the particles were reset); a model that takes sand
+//                                     // from the bed for its grains puts it back here
 //   });
 //
 // The contract between the two is the flow grid: NX x NY cells plus a one-cell border,
