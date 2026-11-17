@@ -38,6 +38,7 @@ let friction = 0.0;
 // It damps the solved field locally, so a rough patch slows flow, drops deposition and resists
 // erosion relative to its surroundings.
 let fricGrid = null, fricDampGrid = null, fricDirty = true;
+let fricUsed = NaN;   // the global friction fricDampGrid was built with
 let fricMode = 0, fricPaint = 1.0, fricRadius = 40;   // 0 = off, 1 = add, 2 = subtract
 let fricBuffer = null;
 
@@ -185,10 +186,12 @@ function project(uVec, vVec, pArr, divArr) {
     for (let i = 1; i <= NX; i++) {
       let idx = IX(i, j);
       if (solid[idx]) continue;
-      let uR = solid[IX(i+1, j)] ? 0 : uVec[IX(i+1, j)], uL = solid[IX(i-1, j)] ? 0 : uVec[IX(i-1, j)];
-      let vT = solid[IX(i, j+1)] ? 0 : vVec[IX(i, j+1)], vB = solid[IX(i, j-1)] ? 0 : vVec[IX(i, j-1)];
-      uVec[idx] -= 0.5 * (pArr[IX(i+1, j)] - pArr[IX(i-1, j)]);
-      vVec[idx] -= 0.5 * (pArr[IX(i, j+1)] - pArr[IX(i, j-1)]);
+      // A wall holds no pressure gradient, so a solid neighbour stands in this cell's own
+      // pressure, as the solve above does (linSolve) and as projectDepth() does. Reading the
+      // solid cell's stored zero instead kicked the flow beside obstacles until it blew up.
+      let R = IX(i+1, j), L = IX(i-1, j), T = IX(i, j+1), B = IX(i, j-1), pc = pArr[idx];
+      uVec[idx] -= 0.5 * ((solid[R] ? pc : pArr[R]) - (solid[L] ? pc : pArr[L]));
+      vVec[idx] -= 0.5 * ((solid[T] ? pc : pArr[T]) - (solid[B] ? pc : pArr[B]));
     }
   setBnd(1, uVec); setBnd(2, vVec);
 }
@@ -323,10 +326,8 @@ function projectDepth(uVec, vVec, pArr, divArr) {
       let idx = IX(i, j);
       if (solid[idx]) continue;
       // A wall holds no pressure gradient, so a solid neighbour stands in this cell's own
-      // pressure. project() reads the solid cell's stored zero instead, which is harmless
-      // there because its pressures stay near zero. Here pressure is measured from the open
-      // outflow and is large upstream, and reading a zero next to an obstacle kicked the
-      // flow there by hundreds of times the inflow speed.
+      // pressure. Reading the solid cell's stored zero instead kicked the flow next to an
+      // obstacle by hundreds of times the inflow speed.
       let R = IX(i+1, j), L = IX(i-1, j), T = IX(i, j+1), B = IX(i, j-1), pc = pArr[idx];
       uVec[idx] -= 0.5 * ((solid[R] ? pc : pArr[R]) - (solid[L] ? pc : pArr[L]));
       vVec[idx] -= 0.5 * ((solid[T] ? pc : pArr[T]) - (solid[B] ? pc : pArr[B]));
@@ -358,6 +359,8 @@ function velocityStep() {
   // lookup rather than an exp() per cell per step.
   if (friction > 0 || fricGrid) {
     ensureFricGrid();
+    // Any change of the global value (slider, reset, a restored scene) rebuilds the grid.
+    if (friction !== fricUsed) fricDirty = true;
     if (fricDirty) {
       for (let j = 0; j < GH; j++) {
         for (let i = 0; i < GW; i++) {
@@ -365,7 +368,7 @@ function velocityStep() {
           fricDampGrid[j * GW + i] = f > 0 ? Math.exp(-f * DT) : 1;
         }
       }
-      fricDirty = false;
+      fricDirty = false; fricUsed = friction;
     }
     for (let j = 1; j <= NY; j++) {
       let gj = Math.min(GH - 1, Math.floor(j * cellH / DEPO_CELL));
@@ -470,6 +473,9 @@ registerModel({
   },
 
   step() { velocityStep(); },
+
+  // R, or the interface found the flow non-finite: start the solver from rest.
+  restart() { uPrev.fill(0); vPrev.fill(0); p.fill(0); divArr.fill(0); },
 
   // The drawn bed or the deposit changed: the flow depth has to be rebuilt.
   bedChanged() { depthDirty = true; },

@@ -50,6 +50,64 @@ module.exports = function ({ app, S, check }) {
     app.setFriction(0);
   }
 
+  // ---------------------------------------------------------------- every friction change reaches the physics
+  // The damping grid is derived and cached. The slider once changed it only the first time
+  // (2026-11-17 stress test): the label moved and the solver kept the old value.
+  {
+    const seen = [];
+    for (const f of [0.5, 3, 0, 1.5]) {
+      app.setFriction(f);
+      app.velocityStep();
+      const g = S().fricDampGrid;
+      seen.push(g ? g[0] : NaN);
+      const want = f > 0 ? Math.exp(-f * app.run("DT")) : 1;
+      if (!(g && Math.abs(g[0] - want) < 1e-6)) { check(false, "each friction change reaches the solver", `friction ${f}: damping ${g ? g[0] : 'none'}, want ${want}`); break; }
+      if (f === 1.5) check(true, "each friction change reaches the solver", `damping ${seen.map(x => x.toFixed(4)).join(' -> ')}`);
+    }
+    app.setFriction(0);
+  }
+
+  // ---------------------------------------------------------------- obstacles beside the outflow
+  // Two rectangles by the outflow, present from rest, sent the plain solver to 2e17 and NaN
+  // within the 80-step spin-up (2026-11-17 stress test, project() read a solid neighbour's
+  // stored zero pressure). The scene is from that report.
+  {
+    const keep = app.run("JSON.stringify(obstacles)");
+    const clips = [{ start: 0, dur: 120 }];
+    const obs = [{ type: "rect", x: 1171.35, y: 19.65, w: 94.32, h: 69.15, rotation: 340.17, clips },
+                 { type: "rect", x: 1161.01, y: 410.40, w: 83.34, h: 83.20, rotation: 151.93, clips }];
+    app.run(`obstacles = ${JSON.stringify(obs)}; buildSolidMask(); solidMaskDirty = false; restartFlow(false); depthGrid = null; depthDirty = false; simTime = 0; globalThis.__fric = [fricGrid, fricDampGrid]; fricGrid = null; fricDampGrid = null`);   // the plain solver and no friction, as on a fresh page with no bed drawn
+    const plain = !app.run("depthGrid");
+    for (let k = 0; k < 80; k++) app.run("simTime += DT; model.step()");
+    let mx = 0, bad = 0;
+    const U = S().U, V = S().V;
+    for (let i = 0; i < U.length; i++) { const q = Math.hypot(U[i], V[i]); if (!Number.isFinite(q)) bad++; else if (q > mx) mx = q; }
+    const inflow = S().inflowVel;
+    check(plain && bad === 0 && mx < 3 * inflow, "obstacles beside the outflow spin up without blowing up",
+      `${plain ? 'plain' : 'depth'} solver, max speed ${mx.toPrecision(3)} (inflow ${inflow}), ${bad} non-finite`);
+    app.run(`obstacles = ${keep}; buildSolidMask(); solidMaskDirty = false; restartFlow(false); depthDirty = true; [fricGrid, fricDampGrid] = globalThis.__fric; fricDirty = true`);
+    for (let k = 0; k < 80; k++) app.run("simTime += DT; model.step()");
+  }
+
+  // ---------------------------------------------------------------- a non-finite flow is restarted
+  // One NaN spreads through the field and never clears; the interface puts the flow back at
+  // rest and says so. R starts the solver's own fields from rest too.
+  {
+    app.setPaused(false);
+    app.run("u[IX(20, 20)] = NaN; v[IX(30, 30)] = Infinity");
+    app.draw();
+    const U = S().U, V = S().V;
+    let bad = 0; for (let i = 0; i < U.length; i++) if (!Number.isFinite(U[i]) || !Number.isFinite(V[i])) bad++;
+    const noted = app.run("flowRestartedAt >= 0");
+    check(bad === 0 && noted, "a non-finite flow is restarted from rest and noted", `${bad} non-finite after one frame, noted ${noted}`);
+    app.run("flowRestartedAt = -1");
+    for (let i = 0; i < 10; i++) app.draw();
+    app.run("restartFlow(false)");
+    const rest = app.run("[uPrev, vPrev, p].every(a => a.every(x => x === 0)) && u.every(x => x === 0) && v.every(x => x === 0)");
+    check(rest, "restarting the flow (R) clears the solver's own fields", rest ? "u, v, uPrev, vPrev, p all zero" : "something kept its values");
+    for (let k = 0; k < 80; k++) app.run("simTime += DT; model.step()");
+  }
+
   // ---------------------------------------------------------------- the friction brush is three-state
   // fricGrid holds the painted zone values (0 by default). fricDampGrid is a derived damping
   // factor rebuilt only when fricDirty, so it is the wrong array to sum.

@@ -200,9 +200,12 @@ exactly as before. Each of these was measured and is covered by a check; do not 
   by up to ten times the inflow speed whenever the flow changes abruptly.
 - **The outflow is open** (`setBndPressureOpen`). Closed like `project()`'s, a converged
   solve turns the inflow/outflow mismatch into a false source.
-- **A solid neighbour stands in the cell's own pressure in the velocity correction.**
-  Pressure is measured from the outflow and is large upstream; reading a solid cell's zero
-  blew the flow up next to obstacles.
+- **A solid neighbour stands in the cell's own pressure in the velocity correction**, in
+  both `projectDepth()` and `project()`. Reading a solid cell's zero blew the flow up next to
+  obstacles (in `project()` too, until the 2026-11-17 stress test found it there).
+- **The interface restarts a flow that goes non-finite** (`flowFinite()` after the spin-up
+  and every step), calls the model's `restart()`, and says so in the HUD for a few seconds.
+  R does the same, so a bad state never survives a restart.
 - Deposit is averaged over the flow cell before it becomes depth.
 - `velocityStep()` advects `vPrev` into `v`, so the cross-flow's history lives in `vPrev`.
   Zeroing `u` and `v` alone does not put the water at rest.

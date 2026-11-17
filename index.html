@@ -1439,6 +1439,25 @@ function updateBedThumb() {
   ctx.fillText(thumbBig ? '3d to shrink' : 'drag to rotate', TW - 6, TH - 6);
 }
 
+// ── A flow that has gone non-finite ──
+// One NaN spreads through the whole field within a few steps and never clears, and the
+// particles and the saved scene go with it. Checked after the spin-up and every step; the
+// flow is put back at rest (the obstacles, bed and deposit stay) and the HUD says so.
+let flowRestartedAt = -1;
+function flowFinite() {
+  for (let k = 0; k < SIZE; k++) if (!Number.isFinite(u[k]) || !Number.isFinite(v[k])) return false;
+  return true;
+}
+function restartFlow(unstable) {
+  u.fill(0); v.fill(0);
+  if (model.restart) model.restart();
+  if (unstable) {
+    flowRestartedAt = Date.now();
+    particles = particles.filter(pt => Number.isFinite(pt.x) && Number.isFinite(pt.y));   // refilled next step
+    console.warn('The flow became non-finite and was restarted from rest.');
+  }
+}
+
 function updateHUD() {
   let fmt=(n)=>n.toFixed(1);
   document.getElementById('simtime').textContent=fmt(simTime);
@@ -1448,6 +1467,7 @@ function updateHUD() {
   document.getElementById('shape').textContent=ghostType;
   document.getElementById('rot').textContent=fmt(ghostRotation%360);
   document.getElementById('paused').textContent=paused?(bedMode?'🖉 BED MODE ('+bedPoints.length+' pts)':'⏸ PAUSED'):'';
+  if (flowRestartedAt >= 0 && Date.now() - flowRestartedAt < 6000) document.getElementById('paused').textContent += ' ⚠ the flow became unstable and was restarted from rest';
   const helpEl=document.getElementById('help'), helpOn=helpVisible();
   helpEl.style.opacity=helpOn?'1':'0'; helpEl.classList.toggle('fading', !helpOn);
   const gb=document.getElementById('guide-btn'); if (gb) gb.style.bottom=bedMode?(BED_CHART_H+14)+'px':'10px';   // clear of the bed editor's strip
@@ -1634,6 +1654,7 @@ function setup() {
   // (the coast moves the bed) supplies its own.
   if (model.spinUp) model.spinUp();
   else for (let k=0; k<80; k++) { simTime+=DT; buildSolidMask(); model.step(); }
+  if (!flowFinite()) restartFlow(true);
   initParticles();
   mountBackends();
   mountGuide();
@@ -1649,6 +1670,7 @@ function draw() {
     simTime += DT;
     if (solidMaskDirty || solidMaskIsDynamic()) { buildSolidMask(); solidMaskDirty = false; }
     model.step();
+    if (!flowFinite()) restartFlow(true);
     updateParticles();
     drawDeposition();
     bedRenderAcc += DT;
@@ -2031,7 +2053,7 @@ function toggleBedMode() {
 function keyPressed() {
   if (guide.open) return;      // while the guide is open its keys come first and nothing else moves
   if (key==='r'||key==='R') {
-    simTime=0; initParticles(); depoBuffer.clear(); trailBuffer.clear(); deposited=[];
+    simTime=0; restartFlow(false); initParticles(); depoBuffer.clear(); trailBuffer.clear(); deposited=[];
     if (depoGrid) depoGrid.fill(0);
     if (model.bedChanged) model.bedChanged();
     bedSurface.clear(); updateBedBuffer();
@@ -2338,6 +2360,8 @@ function updateTimelineVisibility() {
 //     controls: { html, toggles, wire() },   // sidebar section, extra toggle buttons, and
 //                                     // a function that attaches their listeners
 //     bedChanged() {},                // the drawn bed or the deposit changed
+//     restart() {},                   // R, or a non-finite flow: clear the solver's own
+//                                     // state (the interface has zeroed u and v)
 //     resized() {}, gridResized() {}, // the canvas, then the bed grids, changed size
 //     pointer(phase, x, y, event) {}, // 'press' | 'drag'; return true to take the pointer
 //     drawUnderlay() {},              // drawn over the bed, under the particles
