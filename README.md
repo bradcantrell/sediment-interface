@@ -54,7 +54,7 @@ node dev/headless_harness.js index.html    # exit 0 = pass
 The harness loads the three files the way a browser does, with p5 and the DOM mocked, and
 checks behaviour: the draw loop runs, sediment moves, the bed editor works through the real
 mouse handlers, the model and site extension points are used, the river responds to friction
-and to the bed, and the exporter builds a case from the drawn scene. 77 checks. `AGENTS.md`
+and to the bed, and the exporter builds a case from the drawn scene. 81 checks. `AGENTS.md`
 describes the layers and the testing rules.
 
 ## Domain
