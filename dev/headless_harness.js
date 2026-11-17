@@ -1063,8 +1063,96 @@ try {
   check(resized && same(f0, f1) && same(f0, f2),
         "resizing the window stretches the scene with the canvas, and a save after it comes back in the same place",
         `fractions ${f0.map(v => v.toFixed(3)).join("/")} -> resized ${f1.map(v => v.toFixed(3)).join("/")} -> reloaded ${f2.map(v => v.toFixed(3)).join("/")}`);
-  app.run(`resizeCanvas(${W0}, ${H0}); cellW = width / (NX + 2); cellH = height / (NY + 2)`);
+  // back to the first size through windowResized(), so the bed grids follow (the mock's window
+  // is the canvas, so the window is made one sidebar wider than the canvas wanted)
+  app.run(`resizeCanvas(${W0 + 270}, ${H0}); windowResized()`);
   app.setObstacles(obs0); app.setBedPoints(bed0); app.run("solidMaskDirty = true");
+
+  // The bed grids follow the canvas, and the canvas has a floor. Before 2026-11-17 the grids
+  // were sized once in setup(): past the old edge there was no bed, and the deposit stayed at
+  // its old pixels while the scene stretched. A window 270 px wide or less gave a canvas of
+  // zero or less, the draw loop stopped, the particles went NaN and that scene was saved.
+  {
+    const peakAt = () => app.run(`(() => { let m = -1, k = 0; for (let q = 0; q < depoGrid.length; q++) if (depoGrid[q] > m) { m = depoGrid[q]; k = q; }
+      let v = 0; for (let q = 0; q < depoGrid.length; q++) v += depoGrid[q];
+      const i = k % GW, j = Math.floor(k / GW); return [((i + 0.5) * DEPO_CELL) / width, ((j + 0.5) * DEPO_CELL) / height, v / (GW * GH)]; })()`);
+    const keepDepo = app.run("depoGrid.slice()");
+    app.run("depoGrid.fill(0); addDeposit(width * 0.25, height * 0.5, 40)");
+    const p0 = peakAt();
+    app.run(`resizeCanvas(${W0 + 270 + 300}, ${H0 + 200}); windowResized()`);
+    const g = app.run("({ w: width, h: height, GW, GH, n: depoGrid.length, cw: cellW, ch: cellH })");
+    const p1 = peakAt();
+    const gridOk = g.GW === Math.ceil(g.w / 4) + 1 && g.GH === Math.ceil(g.h / 4) + 1 && g.n === g.GW * g.GH &&
+                   Math.abs(g.cw - g.w / 162) < 1e-9 && Math.abs(g.ch - g.h / 92) < 1e-9;
+    // the same place on the canvas, and the same sand as a share of it (heights resample, so
+    // the peak of a one-cell spike drops; what is kept is the volume)
+    const placeOk = Math.abs(p1[0] - p0[0]) < 0.01 && Math.abs(p1[1] - p0[1]) < 0.01 && Math.abs(p1[2] / p0[2] - 1) < 0.05;
+    check(gridOk && placeOk, "resizing re-sizes the bed grids and the deposit stretches with the scene",
+          `canvas ${g.w} x ${g.h}, grid ${g.GW} x ${g.GH}; deposit at ${p0.slice(0, 2).map(v => v.toFixed(3)).join(",")} -> ${p1.slice(0, 2).map(v => v.toFixed(3)).join(",")}, sand per cell ${p0[2].toExponential(3)} -> ${p1[2].toExponential(3)}`);
+    // a tiny window: the canvas stops at its floor and the page keeps running
+    app.run(`resizeCanvas(200, 150); windowResized()`);
+    const small = app.run("({ w: width, h: height })");
+    app.setPaused(false);
+    for (let i = 0; i < 5; i++) app.draw();
+    app.setPaused(true);
+    const fin = app.run("particles.every(p => Number.isFinite(p.x) && Number.isFinite(p.y)) && u.every(Number.isFinite)");
+    check(small.w === 320 && small.h === 240 && fin, "a tiny window keeps the canvas at 320 x 240 and the page running",
+          `canvas ${small.w} x ${small.h}, everything finite ${fin}`);
+    // a narrow window (a phone): the sidebar becomes a drawer and the canvas takes the width
+    app.run(`resizeCanvas(600, 800); windowResized()`);
+    const narrow = app.run("({ w: width, n: narrowLayout() })");
+    check(narrow.n && narrow.w === 600, "a narrow window gives the canvas the whole width, with the sidebar as a drawer", `canvas ${narrow.w} wide, narrow ${narrow.n}`);
+    app.run(`resizeCanvas(${W0 + 270}, ${H0}); windowResized()`);
+    app.run(`(() => { const k = ${JSON.stringify(Array.from(keepDepo))}; if (k.length === depoGrid.length) depoGrid.set(k); else depoGrid.fill(0); })()`);
+    app.setObstacles(obs0); app.setBedPoints(bed0); app.run("solidMaskDirty = true");
+  }
+
+  // Touch. One finger is the mouse, two pinch and pan, touches off the canvas are the browser's,
+  // and the keys' actions are buttons. Until 2026-11-17 touch could not drag, resize, pan or
+  // zoom, a pinch zoomed the whole page, and shape, delete, rotate and restart were keys only.
+  {
+    const cv = { id: "defaultCanvas0", tagName: "CANVAS", closest: () => null };
+    const side = { id: "x", tagName: "DIV", closest: (q) => q === "#sidebar" ? {} : null };
+    const ev = (target, pts) => ({ target, touches: pts.map(([x, y]) => ({ clientX: x, clientY: y })) });
+    const W1 = app.run("width"), H1 = app.run("height");
+    app.setObstacles([]); app.run("resetView(); selectedIdx = -1; setGhostType('circle')");
+    // a tap places a circle where the finger is; a drag of it moves it
+    const t1 = app.run("touchStarted")(ev(cv, [[W1 * 0.3, H1 * 0.4]])); app.run("touchEnded")(ev(cv, []));
+    const placed = S().obstacles.length === 1 && Math.abs(S().obstacles[0].x - W1 * 0.3) < 1 && Math.abs(S().obstacles[0].y - H1 * 0.4) < 1;
+    app.run("touchStarted")(ev(cv, [[W1 * 0.3, H1 * 0.4]]));
+    app.run("touchMoved")(ev(cv, [[W1 * 0.5, H1 * 0.6]]));
+    app.run("touchEnded")(ev(cv, []));
+    const moved = S().obstacles.length === 1 && Math.abs(S().obstacles[0].x - W1 * 0.5) < 1 && Math.abs(S().obstacles[0].y - H1 * 0.6) < 1;
+    check(t1 === false && placed && moved, "a finger places an object where it touches and drags it",
+          `placed ${placed}, dragged ${moved}, touch kept from the page ${t1 === false}`);
+    // two fingers spreading to twice the distance zoom 2x about their middle
+    const mid = [W1 * 0.5, H1 * 0.5];
+    const wBefore = app.run(`[viewX + ${mid[0]} / viewZ, viewY + ${mid[1]} / viewZ]`);
+    // the fingers land one after the other, as real ones do
+    app.run("touchStarted")(ev(cv, [[mid[0] - 50, mid[1]]]));
+    app.run("touchStarted")(ev(cv, [[mid[0] - 50, mid[1]], [mid[0] + 50, mid[1]]]));
+    app.run("touchMoved")(ev(cv, [[mid[0] - 100, mid[1]], [mid[0] + 100, mid[1]]]));
+    app.run("touchEnded")(ev(cv, []));
+    const z = app.run("viewZ"), wAfter = app.run(`[viewX + ${mid[0]} / viewZ, viewY + ${mid[1]} / viewZ]`);
+    const stillOne = S().obstacles.length === 1;
+    check(Math.abs(z - 2) < 1e-6 && Math.abs(wAfter[0] - wBefore[0]) < 1e-6 && Math.abs(wAfter[1] - wBefore[1]) < 1e-6 && stillOne,
+          "two fingers pinch to zoom about their middle, without placing anything", `zoom ${z.toFixed(3)}, objects ${S().obstacles.length}`);
+    app.run("resetView()");
+    // a touch on the sidebar is left to the browser (it scrolls the panel)
+    const sideT = app.run("touchStarted")(ev(side, [[10, 10]]));
+    check(sideT === true && S().obstacles.length === 1, "a touch off the canvas is left to the browser", `handled by the page ${sideT !== true}`);
+    // the tool bar does what the keys do
+    const click = (id) => el(id).dispatchEvent({ type: "click" });
+    click("tool-rect"); const rect = app.run("ghostType") === "rect";
+    app.run("selectedIdx = 0"); const r0 = S().obstacles[0].rotation; click("tool-rotr"); const turned = S().obstacles[0].rotation === (r0 + 15) % 360;
+    click("tool-delete"); const gone = S().obstacles.length === 0;
+    app.run("addDeposit(width / 2, height / 2, 10)"); click("tool-restart"); const cleared = app.run("depoGrid.every(v => v === 0)");
+    const p0 = app.run("paused"); click("tool-pause"); const flipped = app.run("paused") !== p0; click("tool-pause");
+    check(rect && turned && gone && cleared && flipped, "the tool bar chooses the shape, turns, deletes, restarts and pauses",
+          `shape ${rect}, turn ${turned}, delete ${gone}, restart ${cleared}, pause ${flipped}`);
+    click("tool-circle");
+    app.setObstacles(obs0); app.run("solidMaskDirty = true; selectedIdx = -1");
+  }
 
   // A model's own view toggles (the coast's waves and smooth) go into the scene through
   // viewState() and come back through applyViewState(). A stand-in model state is used here

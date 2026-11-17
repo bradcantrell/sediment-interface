@@ -483,11 +483,18 @@ registerModel({
   // The canvas changed size. gridResized() is the bed grids being re-derived for it.
   resized() {
     depthDirty = true;
-    if (fricBuffer) { let oldF = fricBuffer; fricBuffer = createGraphics(width,height); oldF.remove(); }
+    if (fricBuffer) { let oldF = fricBuffer; fricBuffer = createGraphics(width,height); oldF.remove(); redrawFricBuffer(); }
     fricDirty = true;
   },
-  gridResized() {
-    if (fricGrid && fricGrid.length !== GW * GH) { fricGrid = null; fricDampGrid = null; fricDirty = true; }
+  // The painted friction stretches with the scene. (It used to stay at its old pixels, and its
+  // picture was cleared and never redrawn, so it acted where it could not be seen.)
+  gridResized(ogw, ogh) {
+    if (fricGrid && fricGrid.length !== GW * GH) {
+      if (ogw && ogh && fricGrid.length === ogw * ogh) { fricGrid = resampleBedGrid(fricGrid, ogw, ogh); fricDampGrid = new Float32Array(GW * GH); }
+      else { fricGrid = null; fricDampGrid = null; }
+      fricDirty = true;
+    }
+    redrawFricBuffer();
   },
 
   // Sediment rules, read by the interface's particle code every frame.

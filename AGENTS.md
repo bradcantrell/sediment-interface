@@ -61,6 +61,22 @@ Rules:
   field, bed change and model time in its `model.js`, the XBeach export in its `site.js`.
   A change here must pass the coastal repo's harnesses too before that repo syncs.
 
+## Screen size, resizing and touch (2026-11-17)
+
+- `canvasSize()` is the one rule: the window less the sidebar (`sidebarRoom()`, none below
+  `NARROW_W` = 900 px, where the sidebar is a drawer, `body.narrow`), never below 320 x 240.
+- `windowResized()` stretches the scene, the particles, the liftable deposits and the view,
+  re-sizes `GW`/`GH` and resamples `depoGrid` (`resampleBedGrid`, each cell keeps its height),
+  then calls the model's `resized()` and `gridResized(ogw, ogh)`, which must resample the
+  model's own bed layers the same way (river: `fricGrid`; coast: morph, long, pick). `cellW`
+  follows the setup rule, `width / (NX + 2)`. `saveScene()` refuses a size below the floor.
+- Touch: one finger is the mouse (a press waits for the finger to move or lift, so the first
+  finger of a pinch places nothing), two fingers pinch about their middle and pan. Touches
+  that start off the canvas are left to the browser. The canvas has `touch-action: none`.
+- `#tools` is the tool bar (shape, turn, delete, pause, restart, unzoom) on touch screens and
+  narrow windows, where the key list is hidden. The key actions are functions
+  (`restartRun`, `setGhostType`, `rotateSelected`, `deleteSelected`) used by both.
+
 ## Tabs and the saved scene
 
 Both live in `index.html`, so every site gets them through the sync.
@@ -137,7 +153,7 @@ and the simulation was dead along with every listener attached after the throw.
 
 The harness loads the page the way a browser does (inline script, then `model.js`, then
 `site.js`, one scope), mocks p5 and the DOM, and asserts on model state rather than pixels.
-88 checks:
+96 checks:
 
 - **Interface** (`dev/headless_harness.js`, 57): `setup()` completes, the draw loop advances
   time, sediment moves, a transect edits the bed, every visible strip is clickable, the bed

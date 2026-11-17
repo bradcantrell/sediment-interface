@@ -129,6 +129,27 @@ module.exports = function ({ app, S, check }) {
     }
   }
 
+  // ---------------------------------------------------------------- painted friction follows a resize
+  // It used to stay at its old pixels, cleared from the screen but still acting (2026-11-17).
+  {
+    const W0 = app.run("width"), H0 = app.run("height");
+    app.run("ensureFricGrid(); fricGrid.fill(0); paintFriction(width * 0.75, height * 0.5, 1)");
+    const peak = () => app.run(`(() => { let m = -1, k = 0; for (let q = 0; q < fricGrid.length; q++) if (fricGrid[q] > m) { m = fricGrid[q]; k = q; }
+      return [((k % GW + 0.5) * DEPO_CELL) / width, ((Math.floor(k / GW) + 0.5) * DEPO_CELL) / height, fricGrid.length === GW * GH]; })()`);
+    const a = peak();
+    let redrawn = 0;
+    const realRedraw = app.run("redrawFricBuffer");
+    app.run("(f) => { globalThis.__rf = f; }")(() => { redrawn++; });
+    app.run("redrawFricBuffer = function () { globalThis.__rf(); }");
+    app.run(`resizeCanvas(${W0 + 270 + 240}, ${H0 + 120}); windowResized()`);
+    const b = peak();
+    app.run("(f) => { redrawFricBuffer = f; }")(realRedraw);
+    app.run(`resizeCanvas(${W0 + 270}, ${H0}); windowResized(); fricGrid.fill(0); fricDirty = true; redrawFricBuffer()`);
+    check(b[2] && Math.abs(a[0] - b[0]) < 0.01 && Math.abs(a[1] - b[1]) < 0.01 && redrawn > 0,
+          "painted friction stretches with a resize and is drawn again",
+          `peak at ${a.slice(0, 2).map(v => v.toFixed(3)).join(",")} -> ${b.slice(0, 2).map(v => v.toFixed(3)).join(",")}, grid matches ${b[2]}, redrawn ${redrawn}x`);
+  }
+
   // ---------------------------------------------------------------- still water
   // The well-balanced question: on a sloping bed with no inflow, should anything move?
   //

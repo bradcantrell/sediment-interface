@@ -7,11 +7,38 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
   <script>p5.disableFriendlyErrors = true;</script>
   <style>
+    /* --side is the room the sidebar takes from the canvas: 270 px, or none on a narrow screen,
+       where the sidebar is a drawer over the canvas (body.narrow, see canvasSize). */
+    :root { --side: 270px; }
+    body.narrow { --side: 0px; }
     html, body {
       margin: 0; padding: 0; overflow: hidden;
       background: #080810; font-family: 'Courier New', monospace;
     }
     canvas { display: block; }
+    /* The site's canvas takes every touch itself (one finger draws and drags, two pinch and
+       pan), so the browser neither scrolls nor zooms the page over it. */
+    canvas[id^="defaultCanvas"] { touch-action: none; }
+    /* The tool bar: what the keys do, as buttons, for a touch screen or a narrow window. */
+    #tools {
+      display: none; position: fixed; bottom: 44px; left: calc((100vw - var(--side)) / 2); transform: translateX(-50%);
+      z-index: 30; gap: 4px; padding: 4px; background: rgba(12,12,24,0.88);
+      flex-wrap: wrap; justify-content: center; width: max-content; max-width: calc(100vw - var(--side) - 16px); box-sizing: border-box;
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 4px; user-select: none;
+    }
+    #tools button {
+      min-width: 38px; height: 34px; font: 13px 'Courier New', monospace; color: rgba(255,255,255,0.75);
+      background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.14); border-radius: 3px;
+      touch-action: manipulation; padding: 0 6px;
+    }
+    #tools button.on { color: rgba(255,200,100,0.95); border-color: rgba(255,200,100,0.5); }
+    #tools .sep { width: 1px; background: rgba(255,255,255,0.12); margin: 2px 2px; }
+    body.narrow #tools { display: flex; }
+    @media (pointer: coarse) { #tools { display: flex; } }
+    /* The key list is for a keyboard: on a touch screen or a narrow window the tool bar
+       takes its place. */
+    body.narrow #help { display: none; }
+    @media (pointer: coarse) { #help { display: none; } }
 
     #sidebar {
       position: fixed; right: 0; top: 0; bottom: 0;
@@ -20,7 +47,18 @@
       padding: 12px 10px; overflow-y: auto; overflow-x: hidden;
       display: flex; flex-direction: column; gap: 5px;
       z-index: 100; box-sizing: border-box;
+      transition: transform 0.2s;
     }
+    body.narrow #sidebar { width: min(270px, 86vw); transform: translateX(100%); box-shadow: -4px 0 16px rgba(0,0,0,0.6); }
+    body.narrow.drawer-open #sidebar { transform: none; }
+    #drawer-btn {
+      display: none; position: fixed; top: 8px; right: 8px; z-index: 110;
+      font: 12px 'Courier New', monospace; color: rgba(255,200,100,0.9);
+      background: rgba(12,12,24,0.9); border: 1px solid rgba(255,200,100,0.35); border-radius: 3px;
+      padding: 6px 10px; touch-action: manipulation;
+    }
+    body.narrow #drawer-btn { display: block; }
+    body.narrow.drawer-open #drawer-btn { right: calc(min(270px, 86vw) + 8px); }
     #sidebar { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.25) transparent; }
     #sidebar::-webkit-scrollbar { width: 6px; }
     #sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.25); border-radius: 3px; }
@@ -97,7 +135,7 @@
     #zoom-text { font-size: 11px; color: rgba(255,200,100,0.85); margin-top: 4px; white-space: nowrap; }
     #timeline-bar {
       position: fixed; top: 0; left: 0;
-      width: calc(100vw - 270px);
+      width: calc(100vw - var(--side));
       max-height: 55vh; overflow-y: auto;
       background: rgba(8,8,16,0.96);
       border-bottom: 1px solid rgba(255,255,255,0.07);
@@ -110,8 +148,8 @@
     /* The key list. Readable while the run is stopped, out of the way while it runs: it fades
        out slowly when the run starts and comes back quickly when it stops (see updateHUD). */
     #help {
-      position: fixed; bottom: 10px; left: calc((100vw - 270px) / 2); transform: translateX(-50%);
-      width: max-content; max-width: calc(100vw - 270px - 240px);   /* clear of the guide button */
+      position: fixed; bottom: 10px; left: calc((100vw - var(--side)) / 2); transform: translateX(-50%);
+      width: max-content; max-width: calc(100vw - var(--side) - 240px);   /* clear of the guide button */
       font-size: 12px; line-height: 1.6; color: rgba(255,255,255,0.78);
       background: rgba(8,8,16,0.6); padding: 3px 10px; border-radius: 3px;
       text-shadow: 0 1px 3px #000, 0 0 8px #000;
@@ -190,6 +228,7 @@
   </style>
 </head>
 <body>
+<button id="drawer-btn" aria-controls="sidebar" aria-expanded="false">☰ controls</button>
 <div id="sidebar">
     <div id="site-tabs"></div>
     <div id="scene-msg"></div>
@@ -260,6 +299,14 @@
   </div>
 </div>
 
+<div id="tools" role="toolbar" aria-label="tools">
+  <button id="tool-circle" title="circle (1)">○</button><button id="tool-rect" title="rectangle (2)">▭</button><button id="tool-poly" title="freeform (3)">⬠</button>
+  <span class="sep"></span>
+  <button id="tool-rotl" title="turn left (shift + wheel)">⟲</button><button id="tool-rotr" title="turn right (shift + wheel)">⟳</button>
+  <button id="tool-delete" title="delete the selected object (backspace)">✕</button>
+  <span class="sep"></span>
+  <button id="tool-pause" title="pause or run (space)">⏯</button><button id="tool-restart" title="restart the sediment (R)">↺</button><button id="tool-unzoom" title="unzoom (0)">1:1</button>
+</div>
 <div id="help">1 circle &middot; 2 rect &middot; 3 freeform &middot; click place &middot; drag move &middot; drag handle resize &middot; wheel zoom &middot; middle-drag, Alt-drag or arrows pan &middot; 0 unzoom &middot; shift+wheel rotate &middot; [ ] size &middot; backspace delete &middot; F flow &middot; G grid &middot; H help &middot; M bed &middot; space pause &middot; S save &middot; ? guide<span id="help-site"></span></div>
 
 <script>
@@ -267,6 +314,41 @@
 // CONFIGURATION
 // ─────────────────────────────────────────────
 const SIDEBAR_W = 270;
+// The canvas never gets smaller than this. A window 270 px wide or less used to give a canvas
+// of zero or less: the draw loop stopped for good, the particles went NaN, and the broken
+// scene was saved and came back on every reload (2026-11-17 stress test).
+const MIN_CANVAS_W = 320, MIN_CANVAS_H = 240;
+// Below this window width the sidebar is a drawer over the canvas, opened with a button, so a
+// phone or a narrow tablet gets the whole screen for the site (it used to get 120 px).
+const NARROW_W = 900;
+function narrowLayout() { return windowWidth < NARROW_W; }
+// A touch screen (or a window too narrow for the keyboard layout): the tool bar shows, the
+// key list does not, and hints name the fingers.
+function touchFirst() { return narrowLayout() || !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches); }
+function sidebarRoom() { return narrowLayout() ? 0 : SIDEBAR_W; }
+function canvasSize() {
+  return { w: Math.max(MIN_CANVAS_W, Math.floor(windowWidth - sidebarRoom())), h: Math.max(MIN_CANVAS_H, Math.floor(windowHeight)) };
+}
+function layoutSidebar() {
+  if (!document.body || !document.body.classList) return;
+  document.body.classList.toggle('narrow', narrowLayout());
+  if (!narrowLayout()) document.body.classList.remove('drawer-open');
+}
+// A bed grid made for an ogw x ogh grid, stretched onto the current GW x GH, the way the
+// scene stretches with the canvas (each cell keeps its height).
+function resampleBedGrid(a, ogw, ogh) {
+  if (!a || ogw < 2 || ogh < 2) return a ? new Float32Array(GW * GH) : a;
+  const out = new Float32Array(GW * GH);
+  for (let j = 0; j < GH; j++) {
+    const fy = GH > 1 ? j * (ogh - 1) / (GH - 1) : 0, j0 = Math.min(ogh - 2, Math.floor(fy)), ty = fy - j0;
+    for (let i = 0; i < GW; i++) {
+      const fx = GW > 1 ? i * (ogw - 1) / (GW - 1) : 0, i0 = Math.min(ogw - 2, Math.floor(fx)), tx = fx - i0;
+      const A = a[j0 * ogw + i0], B = a[j0 * ogw + i0 + 1], C = a[(j0 + 1) * ogw + i0], D = a[(j0 + 1) * ogw + i0 + 1];
+      out[j * GW + i] = (A * (1 - tx) + B * tx) * (1 - ty) + (C * (1 - tx) + D * tx) * ty;
+    }
+  }
+  return out;
+}
 const NX = 160;
 const NY = 90;
 const SIZE = (NX + 2) * (NY + 2);
@@ -397,7 +479,7 @@ function drawZoomMap() {
   const mapH = Math.round(ZOOM_MAP_W * height / width);
   if (box.style.display !== (on ? 'block' : 'none')) box.style.display = on ? 'block' : 'none';
   if (!on) return;
-  document.getElementById('zoom-text').textContent = 'zoom ' + viewZ.toFixed(1) + '× · pan: middle-drag, Alt-drag or arrows · 0 resets';
+  document.getElementById('zoom-text').textContent = 'zoom ' + viewZ.toFixed(1) + '× · ' + (touchFirst() ? 'pan: two fingers · 1:1 resets' : 'pan: middle-drag, Alt-drag or arrows · 0 resets');
   const c = document.getElementById('zoom-map');
   const dpr = window.devicePixelRatio || 1;
   if (c.width !== Math.round(ZOOM_MAP_W * dpr) || c.height !== Math.round(mapH * dpr)) {
@@ -1488,9 +1570,18 @@ function updateHUD() {
 // P5.JS LIFECYCLE
 // ─────────────────────────────────────────────
 function setup() {
-  let cw = windowWidth - 270;
-  let ch = windowHeight;
-  let canvas = createCanvas(cw, ch);
+  layoutSidebar();
+  const sz = canvasSize();
+  let canvas = createCanvas(sz.w, sz.h);
+  // On a narrow screen the sidebar is a drawer: the button opens and closes it, and touching
+  // the site closes it.
+  const drawerBtn = document.getElementById('drawer-btn');
+  if (drawerBtn && drawerBtn.addEventListener) {
+    const setDrawer = (open) => { document.body.classList.toggle('drawer-open', open); drawerBtn.setAttribute('aria-expanded', open ? 'true' : 'false'); drawerBtn.textContent = open ? '✕ close' : '☰ controls'; };
+    drawerBtn.addEventListener('click', function () { setDrawer(!document.body.classList.contains('drawer-open')); this.blur(); });
+    if (canvas && canvas.elt && canvas.elt.addEventListener)
+      canvas.elt.addEventListener('pointerdown', function () { if (document.body.classList.contains('drawer-open')) setDrawer(false); });
+  }
   pixelDensity(1);
   // Panning while zoomed in (canvasMouseDown). The move and release are heard on the window
   // so a drag that leaves the canvas still ends.
@@ -1566,9 +1657,9 @@ function setup() {
   document.getElementById('toggle-3d').addEventListener('click',function(){
     thumbBig=!thumbBig;
     let c=document.getElementById('bed-thumb');
-    if(thumbBig){ c.width=Math.max(320, windowWidth-270); c.height=windowHeight;
+    if(thumbBig){ c.width=Math.max(320, windowWidth-sidebarRoom()); c.height=windowHeight;
       c.style.position='fixed'; c.style.left='0'; c.style.top='0';
-      c.style.width='calc(100vw - 270px)'; c.style.height='100vh'; c.style.zIndex='40';
+      c.style.width='calc(100vw - var(--side))'; c.style.height='100vh'; c.style.zIndex='40';
       c.style.border='none'; c.style.background='#05060c'; }
     else { c.width=250; c.height=175;
       c.style.position=''; c.style.left=''; c.style.top='';
@@ -1588,6 +1679,7 @@ function setup() {
     document.getElementById('toggle-bed').className=bedMode?'tg-on':'tg-off';
     if (model.updateToggles) model.updateToggles();
     document.getElementById('toggle-pause').className=paused?'tg-on':'tg-off';
+    updateTools();
     document.getElementById('toggle-elev').className=showElev?'tg-on':'tg-off';
     document.getElementById('toggle-streak').className=showStreaks?'tg-on':'tg-off';
   }
@@ -1614,6 +1706,7 @@ function setup() {
     if (typeof updateToggles === 'function') updateToggles();
   });
   document.getElementById('toggle-pause').addEventListener('click',function(){paused=!paused;updateToggles();this.blur();});
+  wireTools();
   document.getElementById('toggle-elev').addEventListener('click',function(){elevMode=(elevMode+1)%5;showElev=elevMode>0;updateToggles();});
   document.getElementById('toggle-streak').addEventListener('click',function(){showStreaks=!showStreaks;trailBuffer.clear();updateToggles();});
   updateToggles();
@@ -1742,21 +1835,36 @@ function draw() {
 }
 
 function windowResized() {
-  let cw = windowWidth - 270;
-  let ch = windowHeight;
-  const ow = width, oh = height;
-  resizeCanvas(cw, ch);
+  layoutSidebar();
+  const sz = canvasSize();
+  const ow = width, oh = height, ogw = GW, ogh = GH;
+  if (sz.w === ow && sz.h === oh) return;
+  resizeCanvas(sz.w, sz.h);
+  const sx = width / ow, sy = height / oh;
   // Stretch the scene with the canvas. Before this, objects stayed put while the canvas and
   // its grid changed size, and the next save recorded the new size with the old positions,
   // so every resize-then-reload moved the scene further off the canvas.
-  stretchScene(width / ow, height / oh);
-  for (const p of particles) { p.x *= width / ow; p.y *= height / oh; p.lx = undefined; }
-  viewX *= width / ow; viewY *= height / oh; clampView();   // the view stretches with the scene
-  cellW = width/NX; cellH = height/NY;
+  stretchScene(sx, sy);
+  for (const p of particles) { p.x *= sx; p.y *= sy; p.lx = undefined; if (p.ox != null) { p.ox *= sx; p.oy *= sy; } }
+  for (const d of deposited) { d.x *= sx; d.y *= sy; }
+  viewX *= sx; viewY *= sy; clampView();   // the view stretches with the scene
+  cellW = width / (NX + 2); cellH = height / (NY + 2);   // the rule setup() uses
   solidMaskDirty = true;
+
+  // The bed grids follow the canvas too. They were sized once in setup(), so after a resize
+  // there was no bed past the old edge, and the deposit and painted friction stayed at their
+  // old pixels while the obstacles and the drawn bed stretched (2026-11-17 stress test).
+  GW = Math.ceil(width / DEPO_CELL) + 1;
+  GH = Math.ceil(height / DEPO_CELL) + 1;
+  const gridChanged = GW !== ogw || GH !== ogh;
+  if (gridChanged) {
+    depoGrid = resampleBedGrid(depoGrid, ogw, ogh);
+    userBedGrid = new Float32Array(GW * GH);
+  }
 
   let oldDepo = depoBuffer; depoBuffer = createGraphics(width,height);
   if (model.resized) model.resized();
+  if (gridChanged && model.gridResized) model.gridResized(ogw, ogh);
   if (oldDepo) { depoBuffer.image(oldDepo,0,0,width,height); oldDepo.remove(); }
 
   let oldTrail = trailBuffer; trailBuffer = createGraphics(width,height); trailBuffer.background(0,0);
@@ -1764,7 +1872,7 @@ function windowResized() {
 
   let oldBed = bedSurface; bedSurface = createGraphics(width,height); bedSurface.background(0,0);
   if (oldBed) oldBed.remove();
-  updateBedBuffer(); updateBedThumb();
+  rebuildUserBedGrid(); updateBedBuffer(); updateBedThumb();
 }
 
 // ─────────────────────────────────────────────
@@ -2034,9 +2142,7 @@ function mouseWheel(event) {
   if (!raw) return false;
   // Shift + wheel turns the object (the wheel alone did, until it zoomed).
   if (event.shiftKey) {
-    let delta=raw>0?5:-5;
-    ghostRotation=(ghostRotation+delta)%360; if(ghostRotation<0)ghostRotation+=360;
-    if (selectedIdx>=0) { obstacles[selectedIdx].rotation=ghostRotation; solidMaskDirty = true; }
+    rotateSelected(raw>0?5:-5);
     return false;
   }
   // The wheel zooms about the pointer, 1x to 10x. Not in the bed editor, whose strips are
@@ -2059,33 +2165,121 @@ function toggleBedMode() {
   else { bedWasPaused = paused; bedMode = true; paused = true; resetView(); refreshBedGeometry(); }
 }
 
-function keyPressed() {
-  if (guide.open) return;      // while the guide is open its keys come first and nothing else moves
-  if (key==='r'||key==='R') {
-    simTime=0; restartFlow(false); initParticles(false); depoBuffer.clear(); trailBuffer.clear(); deposited=[];
-    if (depoGrid) depoGrid.fill(0);
-    if (model.bedChanged) model.bedChanged();
-    bedSurface.clear(); updateBedBuffer();
-    // Restart preserves bed (bedPoints/bedXSections) and obstacle placement.
-    // isObstacleActive keeps obstacles on (timeline off) or re-sequences them from
-    // the top of the loop (timeline on) automatically.
-  }
-  else if (key==='0') { resetView(); }
-  else if (key==='f'||key==='F') { showFlow=!showFlow; }
-  else if (key==='g'||key==='G') { showGrid=!showGrid; }
-  else if (key==='h'||key==='H') { showHelp=!showHelp; }
-  else if (key==='1') { ghostType='circle'; polyPoints=[]; }
-  else if (key==='2') { ghostType='rect'; polyPoints=[]; }
-  else if (key==='3') { ghostType='poly'; }
-  else if (key==='[') { ghostSize=max(20,ghostSize-5); }
-  else if (key===']') { ghostSize=min(100,ghostSize+5); }
-  else if ((key==='Backspace'||key==='Delete')&&selectedIdx>=0&&selectedClip>=0) {
+// ── What the keys do, as functions, so the tool bar's buttons do the same ──
+// Restart preserves the bed (bedPoints/bedXSections) and obstacle placement; isObstacleActive
+// keeps obstacles on (timeline off) or re-sequences them from the top of the loop.
+function restartRun() {
+  simTime=0; restartFlow(false); initParticles(false); depoBuffer.clear(); trailBuffer.clear(); deposited=[];
+  if (depoGrid) depoGrid.fill(0);
+  if (model.bedChanged) model.bedChanged();
+  bedSurface.clear(); updateBedBuffer();
+}
+function setGhostType(t) { ghostType = t; if (t !== 'poly') polyPoints = []; updateTools(); }
+function rotateSelected(d) {
+  ghostRotation = ((ghostRotation + d) % 360 + 360) % 360;
+  if (selectedIdx >= 0) { obstacles[selectedIdx].rotation = ghostRotation; solidMaskDirty = true; }
+}
+// With a clip of the selected object chosen in the timeline, that clip goes; otherwise the object.
+function deleteSelected() {
+  if (selectedIdx < 0) return;
+  if (selectedClip >= 0) {
     let ob = obstacles[selectedIdx];
     if (ob && ob.clips && ob.clips.length > 0) { ob.clips.splice(selectedClip, 1); solidMaskDirty = true; }
     selectedClip = -1; selectedIdx = -1;
     drawTimeline();
+    return;
   }
-  else if ((key==='Backspace'||key==='Delete')&&selectedIdx>=0) { deleteObstacle(selectedIdx); selectedIdx=-1; selectedClip=-1; }
+  deleteObstacle(selectedIdx); selectedIdx = -1; selectedClip = -1;
+}
+function updateTools() {
+  for (const t of ['circle', 'rect', 'poly']) { const b = document.getElementById('tool-' + t); if (b && b.classList) b.classList.toggle('on', ghostType === t); }
+  const p = document.getElementById('tool-pause'); if (p && p.classList) p.classList.toggle('on', !!paused);
+}
+function wireTools() {
+  const on = (id, f) => { const b = document.getElementById(id); if (b && b.addEventListener) b.addEventListener('click', function () { if (!guide.open) f(); this.blur(); updateTools(); }); };
+  on('tool-circle', () => setGhostType('circle'));
+  on('tool-rect', () => setGhostType('rect'));
+  on('tool-poly', () => setGhostType('poly'));
+  on('tool-rotl', () => rotateSelected(-15));
+  on('tool-rotr', () => rotateSelected(15));
+  on('tool-delete', () => deleteSelected());
+  on('tool-pause', () => document.getElementById('toggle-pause').dispatchEvent(new Event('click')));   // the pause toggle's own handler
+  on('tool-restart', () => restartRun());
+  on('tool-unzoom', () => resetView());
+  updateTools();
+}
+
+// ── Touch ──
+// One finger is the mouse: it places, drags, resizes and edits the bed through the mouse
+// handlers. Two fingers pinch to zoom about their middle and move to pan. Touches that start
+// off the canvas (the sidebar, buttons, the guide) are the browser's. Until 2026-11-17 touch
+// could not drag, resize, pan or zoom, and a pinch zoomed the whole page.
+let pinch = null, pendingTouch = null;
+function onCanvas(event) { const t = event && event.target; return !!(t && t.id && String(t.id).indexOf('defaultCanvas') === 0); }
+function canvasPoint(t) {
+  const c = document.getElementById('defaultCanvas0'), rc = c && c.getBoundingClientRect ? c.getBoundingClientRect() : { left: 0, top: 0 };
+  return { x: t.clientX - rc.left, y: t.clientY - rc.top };
+}
+function pinchState(ts) {
+  const a = canvasPoint(ts[0]), b = canvasPoint(ts[1]);
+  return { d: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+}
+// A one-finger press waits until the finger moves or lifts: two fingers never land at the same
+// instant, and the first of a pinch used to place an object before the second arrived.
+function commitTouch() {
+  if (!pendingTouch) return;
+  const t = pendingTouch; pendingTouch = null;
+  mouseX = t.x; mouseY = t.y; mousePressed(t.event);
+}
+function touchStarted(event) {
+  if (!onCanvas(event)) return true;
+  const ts = (event && event.touches) || [];
+  if (ts.length >= 2) {
+    pendingTouch = null; mouseReleased();
+    if (!bedMode) { const s = pinchState(ts); pinch = { d0: s.d, z0: viewZ, mx: s.mx, my: s.my }; }
+    return false;
+  }
+  if (ts.length === 1) { const p = canvasPoint(ts[0]); pendingTouch = { x: p.x, y: p.y, event }; }
+  return false;
+}
+function touchMoved(event) {
+  const ts = (event && event.touches) || [];
+  if (pinch && ts.length >= 2) {
+    const s = pinchState(ts);
+    setZoom(pinch.z0 * s.d / pinch.d0, s.mx, s.my);
+    // and the two fingers moving together pan
+    viewX -= (s.mx - pinch.mx) / viewZ; viewY -= (s.my - pinch.my) / viewZ; clampView(); viewChanged();
+    pinch.mx = s.mx; pinch.my = s.my; pinch.z0 = viewZ; pinch.d0 = s.d;
+    return false;
+  }
+  if (!onCanvas(event) && !pendingTouch) return true;
+  if (pinch) return false;
+  commitTouch();
+  if (ts.length === 1) { const p = canvasPoint(ts[0]); mouseX = p.x; mouseY = p.y; }
+  mouseDragged(event);
+  return false;
+}
+function touchEnded(event) {
+  const ts = (event && event.touches) || [];
+  if (ts.length === 0 && pendingTouch) commitTouch();   // a tap
+  if (ts.length < 2) pinch = null;
+  if (ts.length === 0) mouseReleased();
+  return onCanvas(event) ? false : true;
+}
+
+function keyPressed() {
+  if (guide.open) return;      // while the guide is open its keys come first and nothing else moves
+  if (key==='r'||key==='R') { restartRun(); }
+  else if (key==='0') { resetView(); }
+  else if (key==='f'||key==='F') { showFlow=!showFlow; }
+  else if (key==='g'||key==='G') { showGrid=!showGrid; }
+  else if (key==='h'||key==='H') { showHelp=!showHelp; }
+  else if (key==='1') { setGhostType('circle'); }
+  else if (key==='2') { setGhostType('rect'); }
+  else if (key==='3') { setGhostType('poly'); }
+  else if (key==='[') { ghostSize=max(20,ghostSize-5); }
+  else if (key===']') { ghostSize=min(100,ghostSize+5); }
+  else if ((key==='Backspace'||key==='Delete')&&selectedIdx>=0) { deleteSelected(); }
   else if (key==='Backspace'||key==='Delete') {
     if (bedMode) {
       if (activeXSection>=0) {
@@ -2371,7 +2565,9 @@ function updateTimelineVisibility() {
 //     bedChanged() {},                // the drawn bed or the deposit changed
 //     restart() {},                   // R, or a non-finite flow: clear the solver's own
 //                                     // state (the interface has zeroed u and v)
-//     resized() {}, gridResized() {}, // the canvas, then the bed grids, changed size
+//     resized() {}, gridResized(ogw, ogh) {},   // the canvas, then the bed grids, changed size;
+//                                     // stretch the model's own GW x GH layers from ogw x ogh
+//                                     // with resampleBedGrid(layer, ogw, ogh)
 //     pointer(phase, x, y, event) {}, // 'press' | 'drag'; return true to take the pointer
 //     drawUnderlay() {},              // drawn over the bed, under the particles
 //     updateToggles() {},             // refresh the model's toggle buttons
@@ -2818,6 +3014,7 @@ function captureScene() {
 
 function saveScene() {
   if (!sceneSaveArmed) return false;
+  if (!(width >= MIN_CANVAS_W && height >= MIN_CANVAS_H)) return false;   // never record a broken size
   const store = sceneStore();
   if (!store) return false;
   try { store.setItem(savedSceneKey(), JSON.stringify(captureScene())); return true; }
