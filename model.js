@@ -414,6 +414,10 @@ function riverUpdateToggles() {
 registerModel({
   id: 'river',
 
+  // The bed editor's range, and what a bed unit is: 160 units of drawn relief are 0.5 m in a
+  // 2.0 m channel, as in the OpenFOAM export (bridge/case_generator.js).
+  bed: { zMin: 0, zMax: 160, scale: 0.5 / 160, unit: 'm' },
+
   // The river's steps in the interface's guide (see THE GUIDE in index.html).
   guide: [
     { id: 'river', after: 'welcome', title: 'The river', text:
@@ -457,6 +461,12 @@ registerModel({
       document.getElementById('fric-radius').addEventListener('input', function(){fricRadius=parseFloat(this.value);document.getElementById('fric-radius-val').textContent=fricRadius;});
       document.getElementById('friction').addEventListener('input', function(){friction=parseFloat(this.value);document.getElementById('friction-val').textContent=friction.toFixed(2);});
       document.getElementById('reset-physics').addEventListener('click',function(){
+        // All of the physics sliders, as the guide says. friction, zone mu and brush r used to
+        // be left as they were (2026-11-17 stress test).
+        friction=0;fricPaint=1.0;fricRadius=40;fricDirty=true;
+        document.getElementById('friction').value=0;document.getElementById('friction-val').textContent='0.00';
+        document.getElementById('fric-paint').value=1;document.getElementById('fric-paint-val').textContent='1.00';
+        document.getElementById('fric-radius').value=40;document.getElementById('fric-radius-val').textContent='40';
         inflowVel=2.5;settleThresh=0.20;erosionThresh=1.0;settleProb=0.012;erosionProb=0.02;
         document.getElementById('inflow').value=2.5;document.getElementById('inflow-val').textContent='2.5';
         document.getElementById('settle-thresh').value=0.20;document.getElementById('settle-thresh-val').textContent='0.20';

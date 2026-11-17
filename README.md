@@ -9,7 +9,7 @@ A browser-based sediment-flow sandbox and **OpenFOAM case exporter**. Draw a bed
 - **Obstacle choreography** — place circles, rectangles, and freeform polygons, sequenced on a looping timeline.
 - **Zoom** — the mouse wheel zooms in on the pointer, up to 10x. The middle button pans, and so do Alt (Option) with a drag and the arrow keys. A thumbnail at the top left shows where you are and how far in. Shift and the wheel rotate the selected object; `0` zooms back out.
 - **Touch and small screens** — one finger places, drags and resizes objects and draws the bed; two fingers pinch to zoom and drag to pan. On a touch screen or a window narrower than 900 px a tool bar at the bottom does what the keys do (shape, turn, delete, pause, restart, unzoom), and below 900 px the sidebar becomes a drawer behind the **controls** button. Resizing the window, or turning a tablet, stretches the whole scene with it, the bed and deposits included. The canvas never gets smaller than 320 × 240.
-- **Model tabs** — switch between the river and the coast from the top of the sidebar. Each keeps its own scene in your browser, so coming back finds it as you left it.
+- **Model tabs** — switch between the river and the coast from the top of the sidebar. Each keeps its own scene in your browser (the objects, the drawn bed, the settings and the view), so coming back finds them where you left them; the run itself starts again.
 - **OpenFOAM export** — builds a full case (`blockMeshDict`, `snappyHexMeshDict`, boundary + initial fields, obstacle and bed STLs) and downloads it as a ZIP. The ZIP runs on your own machine with `sh Allrun` (OpenFOAM 14) and carries the scene as `scene.json`.
 - **Open a scene** — the `open` button reads `scene.json`, or the exported ZIP itself, and puts the drawing and settings back.
 
@@ -55,7 +55,7 @@ node dev/headless_harness.js index.html    # exit 0 = pass
 The harness loads the three files the way a browser does, with p5 and the DOM mocked, and
 checks behaviour: the draw loop runs, sediment moves, the bed editor works through the real
 mouse handlers, the model and site extension points are used, the river responds to friction
-and to the bed, and the exporter builds a case from the drawn scene. 96 checks. `AGENTS.md`
+and to the bed, and the exporter builds a case from the drawn scene. 98 checks. `AGENTS.md`
 describes the layers and the testing rules.
 
 ## Domain

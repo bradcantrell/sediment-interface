@@ -150,6 +150,14 @@ module.exports = function ({ app, S, check }) {
           `peak at ${a.slice(0, 2).map(v => v.toFixed(3)).join(",")} -> ${b.slice(0, 2).map(v => v.toFixed(3)).join(",")}, grid matches ${b[2]}, redrawn ${redrawn}x`);
   }
 
+  // ---------------------------------------------------------------- reset puts every physics slider back
+  {
+    app.run("friction = 2; fricPaint = 2.5; fricRadius = 120");
+    app.run("document.getElementById('reset-physics')").dispatchEvent({ type: "click" });
+    const r = app.run("[friction, fricPaint, fricRadius]");
+    check(r[0] === 0 && r[1] === 1 && r[2] === 40, "the physics reset puts friction and the brush back too", `friction ${r[0]}, zone mu ${r[1]}, brush r ${r[2]}`);
+  }
+
   // ---------------------------------------------------------------- still water
   // The well-balanced question: on a sloping bed with no inflow, should anything move?
   //

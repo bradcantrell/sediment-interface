@@ -1107,6 +1107,30 @@ try {
     app.setObstacles(obs0); app.setBedPoints(bed0); app.run("solidMaskDirty = true");
   }
 
+  // The bed editor and the timeline (2026-11-17 stress test, items 22 to 26). In the editor
+  // Backspace edits the bed, never an object selected before it opened; a station goes with its
+  // cross-section; a stale active section is harmless. With the timeline off every object is
+  // there; one click on a full-loop clip changes nothing; deleting the last clip leaves the
+  // object always on.
+  {
+    const keep = { obs: S().obstacles.map(o => Object.assign({}, o)), bed: S().bedPoints.map(p => Object.assign({}, p)) };
+    app.setObstacles([{ type: 'rect', x: 300, y: 300, w: 40, h: 40, rotation: 0, clips: [{ start: 50, dur: 5 }] }]);
+    app.run("selectedIdx = 0; if (bedMode) toggleBedMode(); toggleBedMode()");
+    const selGone = app.run("selectedIdx") === -1;
+    app.run("bedPoints = [{ x: 200, z: 20 }, { x: 800, z: 40 }]; bedXSections = [{ x: 800, points: [{ y: 100, z: 10 }, { y: 400, z: 0 }] }]; activeXSection = 9");
+    global.key = 'Backspace'; app.run("keyPressed()"); app.run("keyPressed()");
+    const bedOk = S().obstacles.length === 1 && app.run("bedPoints.length") === 0 && app.run("bedXSections.length") === 0;
+    app.run("toggleBedMode()");
+    const offOn = app.run("timelineEnabled = false; isObstacleActive(obstacles[0])");
+    app.run("timelineEnabled = true; obstacles[0].clips = [{ start: 0, dur: Infinity }]; selectedIdx = 0; selectedClip = 0; deleteSelected()");
+    const lastClip = app.run("JSON.stringify(obstacles[0] && obstacles[0].clips)");
+    app.run("timelineEnabled = false");
+    check(selGone && bedOk && offOn === true && lastClip === '[{"start":0,"dur":null}]',
+          "the bed editor's Backspace edits only the bed, and the timeline off shows every object",
+          `selection let go ${selGone}, bed edit ${bedOk}, shown with the timeline off ${offOn}, last clip -> ${lastClip}`);
+    app.setObstacles(keep.obs); app.setBedPoints(keep.bed); app.run("bedXSections = []; activeXSection = -1; selectedIdx = -1; selectedClip = -1; solidMaskDirty = true");
+  }
+
   // Touch. One finger is the mouse, two pinch and pan, touches off the canvas are the browser's,
   // and the keys' actions are buttons. Until 2026-11-17 touch could not drag, resize, pan or
   // zoom, a pinch zoomed the whole page, and shape, delete, rotate and restart were keys only.

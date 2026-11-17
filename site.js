@@ -29,6 +29,10 @@ function exportRunHint(meta) {
 // packed beside the case as scene.json so the interface can open it again.
 function exportCaseState() {
   const state = sceneState();
+  // The case is the flow at this moment: the objects that are there now (with the timeline on,
+  // the ones whose clip is playing). scene.json below keeps them all, with their clips.
+  const on = obstacles.map(isObstacleActive);
+  state.obstacles = state.obstacles.filter((o, i) => on[i]);
   if (depoGrid) state.deposit = { grid: Array.from(depoGrid), gw: GW, gh: GH, cell: DEPO_CELL };
   state.sceneText = sceneFileText();
   return state;

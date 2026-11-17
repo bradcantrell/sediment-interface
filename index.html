@@ -183,7 +183,11 @@
       padding: 14px 16px 12px; color: rgba(255,255,255,0.86);
       font: 12px/1.6 'Courier New', monospace; box-shadow: 0 8px 30px rgba(0,0,0,0.6);
       transition: left 0.3s, top 0.3s;
+      /* On a short screen the text scrolls and the buttons stay on the card (the next button
+         used to fall off a screen under about 350 px tall). */
+      max-height: calc(100vh - 24px); display: flex; flex-direction: column;
     }
+    #guide-text { overflow-y: auto; min-height: 0; flex: 1 1 auto; }
     #guide-title {
       font-size: 10px; letter-spacing: 2px; text-transform: uppercase; font-weight: bold;
       color: rgba(255,200,100,0.9); margin: 0 26px 8px 0;
@@ -265,7 +269,7 @@
     <div class="ctrl-row"><label>color thresh <span class="val" id="color-thresh-val">0.5</span></label><input type="range" id="color-thresh" min="0.1" max="1.5" value="0.5" step="0.05"></div>
     <div class="ctrl-row"><label>flow scale <span class="val" id="flow-scale-val">25</span></label><input type="range" id="flow-scale" min="5" max="60" value="25" step="1"></div>
     <div class="ctrl-row"><label>flow dens <span class="val" id="flow-dens-val">8</span></label><input type="range" id="flow-dens" min="3" max="20" value="8" step="1"></div>
-    <div class="ctrl-row"><label>flow opacity <span class="val" id="flow-opacity-val">140</span></label><input type="range" id="flow-opacity" min="20" max="255" value="55" step="5"></div>
+    <div class="ctrl-row"><label>flow opacity <span class="val" id="flow-opacity-val">55</span></label><input type="range" id="flow-opacity" min="20" max="255" value="55" step="5"></div>
     <div class="ctrl-row"><label>particles <span class="val" id="particle-count-val">3000</span></label><input type="range" id="particle-count" min="500" max="8000" value="3000" step="100"></div>
 
     <div class="sect-label">toggles</div>
@@ -308,7 +312,7 @@
   <span class="sep"></span>
   <button id="tool-pause" title="pause or run (space)">⏯</button><button id="tool-restart" title="restart the sediment (R)">↺</button><button id="tool-unzoom" title="unzoom (0)">1:1</button>
 </div>
-<div id="help">1 circle &middot; 2 rect &middot; 3 freeform &middot; click place &middot; drag move &middot; drag handle resize &middot; wheel zoom &middot; middle-drag, Alt-drag or arrows pan &middot; 0 unzoom &middot; shift+wheel rotate &middot; [ ] size &middot; backspace delete &middot; F flow &middot; G grid &middot; H help &middot; M bed &middot; space pause &middot; S save &middot; ? guide<span id="help-site"></span></div>
+<div id="help">1 circle &middot; 2 rect &middot; 3 freeform &middot; click place &middot; drag move &middot; drag handle resize &middot; wheel zoom &middot; middle-drag, Alt-drag or arrows pan &middot; 0 unzoom &middot; shift+wheel rotate &middot; [ ] size &middot; backspace delete &middot; F flow &middot; G grid &middot; H help &middot; M bed &middot; space pause &middot; R restart &middot; S save &middot; ? guide<span id="help-site"></span></div>
 
 <script>
 // ─────────────────────────────────────────────
@@ -584,6 +588,15 @@ function bedChartY() { return height - BED_CHART_H; }
 // (model.bed = { zMin, zMax, datumLabel }): a river bed is drawn up from its floor, 0 to 160;
 // a coast needs both sides of still water. These three functions are the single mapping
 // between elevation and the transect chart, used by drawing, hit-testing and editing alike.
+// An elevation as people read it: the model says what one bed unit is (model.bed.scale, in
+// model.bed.unit). The labels used to print raw bed units, which on the coast read 20 times
+// the metres its readouts show (2026-11-17 stress test).
+function zShown(z) { const b = model && model.bed; return (b && b.scale) ? z * b.scale : z; }
+function zLabel(z, digits) {
+  const b = model && model.bed;
+  const d = digits != null ? digits : ((b && b.scale) ? 2 : 1);
+  return zShown(z).toFixed(d) + ((b && b.unit) ? ' ' + b.unit : '');
+}
 function bedZMin() { return (model && model.bed && model.bed.zMin != null) ? model.bed.zMin : 0; }
 function bedZMax() { return (model && model.bed && model.bed.zMax != null) ? model.bed.zMax : 160; }
 function bedChartYOf(z) { return height - BED_CHART_H * ((z - bedZMin()) / (bedZMax() - bedZMin())); }
@@ -761,6 +774,9 @@ function timelineLoopTime() {
 }
 
 function isObstacleActive(ob) {
+  // With the timeline off every object is there: the clips only act while it is on. (Turning
+  // it off used to leave the objects hidden that a clip had hidden. 2026-11-17 stress test.)
+  if (!timelineEnabled) return true;
   let T = timelineDuration;
   let loopT = timelineLoopTime();
   let clips = ob.clips || [];
@@ -801,7 +817,12 @@ function initParticles(keepSand = true) {
   for (let i = 0; i < particleCount; i++) particles.push(model.spawnParticle());
 }
 
+// Grains that have settled since the last restart. The HUD's "deposited" showed the length of
+// the list of liftable deposits, which stops at the particle setting.
+let settledCount = 0;
+let refreshToggles = null;   // set in setup(): the toggle buttons show what the keys changed
 function settleParticle(p, bedHere) {
+  settledCount++;
   // A model may size a grain's deposit (the coast ties it to model time); the grain keeps
   // that amount, so lifting it again takes back what it put down.
   const amt = (model.rules && model.rules.depositAmount) ? model.rules.depositAmount(p) : DEPO_AMOUNT;
@@ -1063,7 +1084,7 @@ function drawSpotElevations() {
     // effectively invisible, which is why the readout looked broken.
     atScreenSize(px, py, () => {
       textAlign(CENTER, BOTTOM); textSize(sz);
-      let label = z.toFixed(1);
+      let label = zShown(z).toFixed(model && model.bed && model.bed.scale ? 2 : 1);
       let tw = textWidth(label) + 4;
       noStroke(); fill(0, 0, 0, 150 * (alpha/255)); rect(-tw/2, -sz - 3, tw, sz + 3);
       fill(255,235,170, alpha); text(label, 0, -3);
@@ -1333,7 +1354,7 @@ function drawBedProfile() {
   noStroke(); fill(10,12,22,200); rect(0,stripY,width,stripH);
   stroke(40,40,55,60); strokeWeight(0.5);
   let zLo=bedZMin(), zHi=bedZMax();
-  for (let gz=Math.floor(zLo/20)*20+20; gz<zHi; gz+=20) { let gy=bedChartYOf(gz); line(0,gy,width,gy); noStroke(); fill(255,255,255,30); textAlign(RIGHT,CENTER); textSize(9); text(gz,22,gy); }
+  for (let gz=Math.floor(zLo/20)*20+20; gz<zHi; gz+=20) { let gy=bedChartYOf(gz); line(0,gy,width,gy); noStroke(); fill(255,255,255,30); textAlign(RIGHT,CENTER); textSize(9); text(zShown(gz).toFixed(model && model.bed && model.bed.scale ? 1 : 0),22,gy); }
   // With a range that goes below zero, mark zero: it is the datum the model measures from.
   if (zLo < 0) {
     stroke(90,170,255,150); strokeWeight(1); line(0,bedChartYOf(0),width,bedChartYOf(0));
@@ -1341,7 +1362,7 @@ function drawBedProfile() {
     stroke(40,40,55,60); strokeWeight(0.5);
   }
   stroke(60,60,80,100); strokeWeight(1); line(0,stripY,width,stripY);
-  noStroke(); fill(255,255,255,50); textAlign(LEFT,TOP); textSize(10); text('bed profile (z↑)',8,stripY+4);
+  noStroke(); fill(255,255,255,50); textAlign(LEFT,TOP); textSize(10); text('bed profile (z↑' + (model && model.bed && model.bed.unit ? ', ' + model.bed.unit : '') + ')',8,stripY+4);
 
   if (bedPoints.length >= 2) {
     fill(30,28,45,120); noStroke(); beginShape();
@@ -1525,7 +1546,7 @@ function updateBedThumb() {
   ctx.fillStyle = 'rgba(255,235,170,0.85)';
   ctx.font = '10px Courier New';
   ctx.textAlign = 'left';
-  ctx.fillText('z ' + zMin.toFixed(1) + ' to ' + zMax.toFixed(1), 6, TH - 6);
+  ctx.fillText('z ' + zLabel(zMin) + ' to ' + zLabel(zMax), 6, TH - 6);
   ctx.textAlign = 'right';
   ctx.fillStyle = 'rgba(255,255,255,0.35)';
   ctx.fillText(thumbBig ? '3d to shrink' : 'drag to rotate', TW - 6, TH - 6);
@@ -1554,7 +1575,7 @@ function updateHUD() {
   let fmt=(n)=>n.toFixed(1);
   document.getElementById('simtime').textContent=fmt(simTime);
   document.getElementById('mobile').textContent=particles.length;
-  document.getElementById('deposited').textContent=deposited.length;
+  document.getElementById('deposited').textContent=settledCount;
   document.getElementById('obstacles').textContent=obstacles.length;
   document.getElementById('shape').textContent=ghostType;
   document.getElementById('rot').textContent=fmt(ghostRotation%360);
@@ -1674,6 +1695,7 @@ function setup() {
   document.getElementById('depo-oldest').addEventListener('input', function(){ depoOldestColor=this.value; redrawDepoBuffer(); });
 
   // Toggles
+  refreshToggles = function () { updateToggles(); };
   function updateToggles(){
     document.getElementById('toggle-grid').className=showGrid?'tg-on':'tg-off';
     document.getElementById('toggle-flow').className=showFlow?'tg-on':'tg-off';
@@ -2030,7 +2052,7 @@ function mousePressed(event) {
   if (mouseX<0||mouseX>width||mouseY<0||mouseY>height) return;
   if ((event && event.button === 1) || mouseButton === CENTER || panDrag) return;   // a pan, not a click (canvasMouseDown)
   updatePointer();
-  if (model.pointer && model.pointer('press', wmX, wmY, event)) return;   // a model tool took the click
+  if (!bedMode && model.pointer && model.pointer('press', wmX, wmY, event)) return;   // a model tool took the click (never in the bed editor)
 
   if (bedMode) {
     let stripH=160, stripY=height-stripH, bedMaxZ=160;
@@ -2102,7 +2124,7 @@ function mouseDragged(event) {
   if (guide.open) return;
   if (panDrag) return;
   updatePointer();
-  if (model.pointer && model.pointer('drag', wmX, wmY, event)) return;
+  if (!bedMode && model.pointer && model.pointer('drag', wmX, wmY, event)) return;
   if (event&&event.target) { let t=event.target; if(t.closest('#sidebar')||t.id==='bed-thumb'||t.id==='timeline-canvas') return; }
   if (bedMode) {
     let stripH=160,stripY=height-stripH,bedMaxZ=160;
@@ -2116,8 +2138,13 @@ function mouseDragged(event) {
       if (xsData&&pi<xsData.points.length) {
         let xStripW=60, sx=constrain(bedPoints[si].x-xStripW/2, 0, width-xStripW);
         let absZ=Math.max(bedZMin(), xsVxToAbs(mouseX,sx,xStripW,bedPoints[si].z));
-        xsData.points[pi].z=absZ-bedPoints[si].z;
-        xsData.points[pi].y=constrain(mouseY/stripY*height,0,height);
+        const held = xsData.points[pi];
+        held.z=absZ-bedPoints[si].z;
+        held.y=constrain(mouseY/stripY*height,0,height);
+        // Kept in order along the section: the bed reads the points in order, and a point dragged
+        // past its neighbour used to leave a bed that differed from the drawn profile.
+        xsData.points.sort((a,b)=>a.y-b.y);
+        editingXSStation.pointIdx = xsData.points.indexOf(held);
         updateBedBuffer(); updateBedThumb();
       }
       return;
@@ -2163,13 +2190,41 @@ function mouseWheel(event) {
 let bedWasPaused = true;
 function toggleBedMode() {
   if (bedMode) { bedMode = false; paused = bedWasPaused; }
-  else { bedWasPaused = paused; bedMode = true; paused = true; resetView(); refreshBedGeometry(); }
+  else {
+    // An object selected before the editor opened is let go, so Backspace in the editor edits
+    // the bed and cannot delete it (2026-11-17 stress test).
+    selectedIdx = -1; selectedClip = -1; dragging = false; resizeDrag = null; polyVertexDrag = null;
+    bedWasPaused = paused; bedMode = true; paused = true; resetView(); refreshBedGeometry();
+  }
+}
+// Backspace in the bed editor: the last point of the active station's cross-section, or with
+// none active the last station, which takes its cross-section with it. (A deleted station's
+// section used to stay behind and the export still carved it; a stale active index popped the
+// wrong section or threw.)
+function deleteBedPoint() {
+  if (activeXSection >= bedPoints.length) activeXSection = -1;
+  if (activeXSection >= 0) {
+    const sx = bedPoints[activeXSection].x;
+    const xsData = bedXSections.find(xs => xs.x === sx);
+    if (xsData && xsData.points.length > 0) {
+      xsData.points.pop();
+      if (xsData.points.length === 0) bedXSections = bedXSections.filter(xs => xs.x !== sx);
+      updateBedBuffer(); updateBedThumb(); return;
+    }
+  }
+  if (bedPoints.length > 0) {
+    const gone = bedPoints.pop();
+    bedXSections = bedXSections.filter(xs => xs.x !== gone.x);
+    if (activeXSection >= bedPoints.length) activeXSection = -1;
+    updateBedBuffer(); updateBedThumb();
+  }
 }
 
 // ── What the keys do, as functions, so the tool bar's buttons do the same ──
 // Restart preserves the bed (bedPoints/bedXSections) and obstacle placement; isObstacleActive
 // keeps obstacles on (timeline off) or re-sequences them from the top of the loop.
 function restartRun() {
+  settledCount = 0;
   simTime=0; restartFlow(false); initParticles(false); depoBuffer.clear(); trailBuffer.clear(); deposited=[];
   if (depoGrid) depoGrid.fill(0);
   if (model.bedChanged) model.bedChanged();
@@ -2185,7 +2240,12 @@ function deleteSelected() {
   if (selectedIdx < 0) return;
   if (selectedClip >= 0) {
     let ob = obstacles[selectedIdx];
-    if (ob && ob.clips && ob.clips.length > 0) { ob.clips.splice(selectedClip, 1); solidMaskDirty = true; }
+    if (ob && ob.clips && ob.clips.length > 0) {
+      ob.clips.splice(selectedClip, 1); solidMaskDirty = true;
+      // Its last clip gone, the object is there all the time again (it used to vanish for good,
+      // with no clip left to drag back).
+      if (ob.clips.length === 0) ob.clips.push({ start: 0, dur: Infinity });
+    }
     selectedClip = -1; selectedIdx = -1;
     drawTimeline();
     return;
@@ -2270,6 +2330,12 @@ function touchEnded(event) {
 
 function keyPressed() {
   if (guide.open) return;      // while the guide is open its keys come first and nothing else moves
+  // A key aimed at a slider, a field, a menu or a button is theirs: no canvas hotkey, and the
+  // browser keeps Tab, Enter and the arrows. (Returning false here blocked them all, and the
+  // hotkeys fired from focused controls. 2026-11-17 stress test.)
+  const focus = document.activeElement;
+  if (focus && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(focus.tagName || '')) return true;
+  if (key === 'Tab') return true;
   if (key==='r'||key==='R') { restartRun(); }
   else if (key==='0') { resetView(); }
   else if (key==='f'||key==='F') { showFlow=!showFlow; }
@@ -2280,22 +2346,15 @@ function keyPressed() {
   else if (key==='3') { setGhostType('poly'); }
   else if (key==='[') { ghostSize=max(20,ghostSize-5); }
   else if (key===']') { ghostSize=min(100,ghostSize+5); }
+  else if ((key==='Backspace'||key==='Delete')&&bedMode) { deleteBedPoint(); }
   else if ((key==='Backspace'||key==='Delete')&&selectedIdx>=0) { deleteSelected(); }
-  else if (key==='Backspace'||key==='Delete') {
-    if (bedMode) {
-      if (activeXSection>=0) {
-        let xsData=bedXSections.find(xs=>xs.x===bedPoints[activeXSection].x);
-        if (xsData&&xsData.points.length>0) { xsData.points.pop(); if(xsData.points.length===0)bedXSections=bedXSections.filter(xs=>xs.x!==bedPoints[activeXSection].x); updateBedBuffer(); updateBedThumb(); return; }
-      }
-      if (bedPoints.length>0) { bedPoints.pop(); updateBedBuffer(); updateBedThumb(); }
-      return;
-    }
-  }
   else if (key==='Escape') { selectedIdx=-1; dragging=false; resizeDrag=null; polyVertexDrag=null; polyPoints=[]; if(bedMode)toggleBedMode(); }
   else if (key==='m'||key==='M') { toggleBedMode(); }
   else if (key==='s'||key==='S') { saveCanvas('sediment-'+floor(simTime),'png'); }
   else if (model.key && model.key(key)) { /* the model took it */ }
   else backendKey(key);
+  // M, Esc, F and G change what the toggle buttons show (they used to keep the old state)
+  if (refreshToggles) refreshToggles();
   return false;
 }
 
@@ -2431,13 +2490,10 @@ function timelineMouseDown(e) {
     let start = ((c.start || 0) % T + T) % T;
     let dur = (c.dur == null) ? DEFAULT_OBJ_DUR : c.dur;
     if (dur >= T) {
-      // full-loop clip: clicking materializes it into a finite clip centered here
-      let clickT = x2t(mx);
-      c.dur = DEFAULT_OBJ_DUR;
-      c.start = ((clickT - DEFAULT_OBJ_DUR / 2) % T + T) % T;
-      solidMaskDirty = true;
+      // A full-loop clip becomes a finite clip, centred where it was grabbed, only once it is
+      // really dragged. (One click used to cut it to a 10 s clip.)
       selectedClip = ci;
-      tlDrag = { mode: 'move', obstacleIdx: row, clipIdx: ci, grabX: mx, origStart: c.start, origDur: c.dur };
+      tlDrag = { mode: 'full-pending', obstacleIdx: row, clipIdx: ci, grabX: mx, startX: mx };
       drawTimeline();
       return;
     }
@@ -2464,6 +2520,14 @@ function timelineMouseMove(e) {
   let x2t = (x) => ((x - TL_GUTTER) / axisW) * T;
 
   if (tlDrag) {
+    if (tlDrag.mode === 'full-pending') {
+      if (Math.abs(mx - tlDrag.startX) <= 3) return;   // not yet a drag
+      let c = obstacles[tlDrag.obstacleIdx].clips[tlDrag.clipIdx];
+      c.dur = DEFAULT_OBJ_DUR;
+      c.start = ((x2t(tlDrag.startX) - DEFAULT_OBJ_DUR / 2) % T + T) % T;
+      solidMaskDirty = true;
+      Object.assign(tlDrag, { mode: 'move', origStart: c.start, origDur: c.dur });
+    }
     if (tlDrag.mode === 'create-pending') {
       if (Math.abs(mx - tlDrag.startX) > 3) {
         let ob = obstacles[tlDrag.obstacleIdx];
@@ -2515,10 +2579,11 @@ function timelineMouseMove(e) {
   let clips = ob.clips || [];
   let t2x = (t) => TL_GUTTER + (t / T) * axisW;
   for (let ci = clips.length - 1; ci >= 0; ci--) {
-    let c = clips[ci];
-    let dur = (c.dur == null) ? DEFAULT_OBJ_DUR : c.dur;
+    // (named clip: called c, it hid the canvas c, and setting the cursor threw on every hover)
+    let clip = clips[ci];
+    let dur = (clip.dur == null) ? DEFAULT_OBJ_DUR : clip.dur;
     if (dur >= T) continue;
-    let start = ((c.start || 0) % T + T) % T;
+    let start = ((clip.start || 0) % T + T) % T;
     let x0 = t2x(start), x1 = t2x(start + dur);
     let x1e = (x1 > W) ? (x1 - W) : x1;
     if (Math.abs(mx - x0) <= 6 || Math.abs(mx - x1e) <= 6) { c.style.cursor = 'ew-resize'; return; }
@@ -2575,7 +2640,8 @@ function updateTimelineVisibility() {
 //     viewState() {},                 // the model's own view toggles, saved with the scene
 //     applyViewState(v) {},           // put them back from a saved scene
 //     scene(st) {},                   // add the model's part to sceneState()
-//     bed: { zMin, zMax, datumLabel },   // elevation range of the bed editor (default 0..160)
+//     bed: { zMin, zMax, datumLabel,     // elevation range of the bed editor (default 0..160)
+//            scale, unit },              // one bed unit in unit (labels show z * scale unit)
 //     defaultBedZ(x, y) {},           // the bed when nothing is drawn (default: flat, 0)
 //     bedTotal(z, x, y) {},           // z is drawn bed + deposit; return it with the model's
 //                                     // own layers added
@@ -2585,7 +2651,8 @@ function updateTimelineVisibility() {
 //     makeObstacle(type, x, y, rot) {},   // build an object of the model's own kind, or null
 //     key(k) {},                      // a key the interface does not use; return true if taken
 //     help: '4 nourish',              // appended to the key list
-//     guide: [{ id, title, text, target, after }],   // steps for the guide (see THE GUIDE);
+//     guide: [{ id, title, text, target, after, replace }],   // steps for the guide (see THE GUIDE);
+//                                     // replace: the id of a shared step this one stands in for
 //                                     // after defaults to 'thumb'
 //     clock() {}, formatDuration(t) {},   // the timeline's time and how to print it
 //     timeline: { duration, objectDuration, min, max, step },
@@ -2742,10 +2809,11 @@ const GUIDE_STEPS = [
     `<p>An object is anything solid you put in the water. A boulder, a pier, a groyne, a planted island, a wall. The water has to go around it, and the sediment shows you what that does.</p>
      <p>Press <b>1</b> for a circle, <b>2</b> for a rectangle or <b>3</b> for a freeform shape, then click on the site to place it. For a freeform shape, click each corner, then click the first corner again to close it.</p>
      <p>Click an object to select it. Drag it to move it, drag a handle to resize it, and hold Shift while you turn the mouse wheel to rotate it. <b>[</b> and <b>]</b> change the size of the next one, and Backspace deletes the one you selected.</p>
+     <p>On a touch screen, tap the site to place an object and drag it with one finger to move it. Pinch with two fingers to zoom. The bar of buttons at the bottom lets you pick a shape, turn the object you selected, or delete it.</p>
      <p>Then watch. Sediment usually piles up in the slow water behind an object and gets scoured away beside it, where the water squeezes past.</p>` },
   { id: 'tabs', target: '#site-tabs', title: 'Models and scenes', text:
     `<p>Each tab is a different model of moving water. River is a channel with water flowing through it. Coast is a beach with waves coming in from the sea. Click a tab to switch.</p>
-     <p>Each tab keeps its own scene in this browser, so you can leave and come back to find it as you left it. Nothing carries over from one model to another.</p>
+     <p>Each tab keeps its own scene in this browser. The objects, the drawn bed, the settings and the view are where you left them when you come back, though the model starts its run again. Nothing carries over from one model to another.</p>
      <p><b>open</b> loads a scene from a case you exported before, either its scene.json or the ZIP itself. <b>new</b> forgets the saved scene and starts this model fresh.</p>` },
   { id: 'stats', target: '#sidebar-stats', title: 'The numbers', text:
     `<p><b>sim-time</b> is how long the model has been running. <b>mobile</b> is the number of grains moving right now and <b>deposited</b> is how many have settled. <b>obstacles</b> counts the objects you have placed.</p>
@@ -2783,6 +2851,12 @@ function guideSteps() {
   const out = GUIDE_STEPS.map(s => Object.assign({}, s)), orphans = [];
   const add = (list, dflt, from) => {
     for (const s of (list || [])) {
+      // A step with replace takes the place of a shared step that does not hold for this model
+      // (the coast has no lee behind an object, which the shared 'draw' step promised).
+      if (s.replace) {
+        const k = out.findIndex(x => x.id === s.replace);
+        if (k >= 0) { out[k] = Object.assign({}, out[k], s, { id: s.replace, from }); continue; }
+      }
       const after = s.after || dflt;
       let k = out.findIndex(x => x.id === after), j;
       if (k < 0) { orphans.push(from + ':' + (s.id || s.title)); j = out.length - 1; }
@@ -3040,6 +3114,8 @@ function sceneIsValid(s) {
   if (!Array.isArray(s.obstacles) || !Array.isArray(s.bedPoints) || !Array.isArray(s.bedXSections)) return false;
   for (const o of s.obstacles) {
     if (!o || typeof o.type !== 'string' || !num(o.x) || !num(o.y)) return false;
+    // sizes and turn too: a NaN width went straight into the exported STL
+    for (const k of ['w', 'h', 'size', 'rotation']) if (o[k] != null && !num(o[k])) return false;
     if (o.type === 'poly' && !(Array.isArray(o.points) && o.points.every(p => p && num(p.x) && num(p.y)))) return false;
     if (o.clips && !(Array.isArray(o.clips) && o.clips.every(c => c && (c.dur == null || c.dur === 'inf' || num(c.dur))))) return false;
   }
@@ -3150,7 +3226,7 @@ function checkSceneText(text) {
   let s = null;
   try { s = JSON.parse(text); } catch (e) { return { ok: false, why: 'that is not a scene file' }; }
   if (!sceneIsValid(s)) return { ok: false, why: 'that is not a scene file this page can read' };
-  if (s.tab !== currentTabId()) return { ok: false, why: 'that scene belongs to the ' + (s.tab || 'another') + ' tab' };
+  if (s.tab !== currentTabId()) return { ok: false, why: s.tab ? 'that scene belongs to the ' + s.tab + ' tab' : 'that scene belongs to another tab' };
   return { ok: true, scene: s };
 }
 
@@ -3204,6 +3280,8 @@ function findSceneInZip(bytes) {
 
 // The scene text in a picked file: a scene.json as it is, or the one inside a ZIP. null if
 // the ZIP holds none or packs it in a way this page cannot unpack.
+// A ZIP whose scene.json is packed in a way this browser cannot unpack says so (it used to say
+// there was no scene.json in it).
 async function sceneTextFromFile(bytes) {
   if (!(bytes.length > 3 && bytes[0] === 0x50 && bytes[1] === 0x4b)) return new TextDecoder().decode(bytes);
   const f = findSceneInZip(bytes);
@@ -3212,7 +3290,7 @@ async function sceneTextFromFile(bytes) {
   if (f.method === 8 && typeof DecompressionStream === 'function') {
     return await new Response(new Blob([f.data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
   }
-  return null;
+  throw new Error('packed');
 }
 
 function sceneMessage(t) { const m = document.getElementById('scene-msg'); if (m) m.textContent = t; }
@@ -3222,18 +3300,25 @@ function pickSceneFile() {
   const inp = document.createElement('input');
   inp.type = 'file';
   inp.accept = '.json,.zip,application/json,application/zip';
+  // On the page while it is picked: some browsers (iOS Safari among them) ignore a file input
+  // that is not in the document.
+  inp.style.display = 'none';
+  if (document.body && document.body.appendChild) document.body.appendChild(inp);
   inp.addEventListener('change', async () => {
     const f = inp.files && inp.files[0];
+    if (inp.parentNode) inp.parentNode.removeChild(inp);
     if (!f) return;
     let r;
-    try {
+    if (f.size > SCENE_FILE_MAX) r = { ok: false, why: 'that file is ' + Math.round(f.size / 1e6) + ' MB, too big to be a scene or an exported case' };
+    else try {
       const text = await sceneTextFromFile(new Uint8Array(await f.arrayBuffer()));
       r = (text == null) ? { ok: false, why: 'there is no scene.json in that file' } : openSceneText(text);
-    } catch (e) { r = { ok: false, why: 'that file could not be read' }; }
+    } catch (e) { r = { ok: false, why: e && e.message === 'packed' ? 'the scene.json in that ZIP is packed in a way this browser cannot unpack' : 'that file could not be read' }; }
     sceneMessage(r.ok ? '' : 'not opened: ' + r.why);
   });
   inp.click();
 }
+const SCENE_FILE_MAX = 100e6;   // an exported case with its bed is a few MB
 
 </script>
 <script src="model.js"></script>
