@@ -757,9 +757,19 @@ function getVelocityAt(px, py) {
   let i = constrain(floor(px / cellW), 0, NX+1);
   let j = constrain(floor(py / cellH), 0, NY+1);
   let idx = IX(i, j);
-  velOut.vx = solid[idx] ? 0 : u[idx] * cellW;
-  velOut.vy = solid[idx] ? 0 : v[idx] * cellH;
+  let held = solid[idx] && !passableCell(idx);
+  velOut.vx = held ? 0 : u[idx] * cellW;
+  velOut.vy = held ? 0 : v[idx] * cellH;
   return velOut;
+}
+
+// An obstacle's cell that water crosses, when the model says so (model.passable: the river's
+// dam spilling over its crest). Grains go through it and read its speed.
+function passableCell(idx) { const pass = model && model.passable; return !!(pass && pass[idx]); }
+function passableAt(px, py) {
+  if (!(model && model.passable)) return false;
+  let i = constrain(floor(px / cellW), 0, NX+1), j = constrain(floor(py / cellH), 0, NY+1);
+  return passableCell(IX(i, j));
 }
 
 function timelineLoopTime() {
@@ -885,7 +895,7 @@ function updateParticles() {
       particles.splice(i,1); continue;
     }
     let hitObstacle = false;
-    if (isInsideObstacle(p.x, p.y)) {
+    if (isInsideObstacle(p.x, p.y) && !passableAt(p.x, p.y)) {
       for (let ob of obstacles) {
         if (!isObstacleActive(ob)) continue;
         let dx = p.x - ob.x, dy = p.y - ob.y, nx = 0, ny = 0, pen = 0;
@@ -938,7 +948,9 @@ function updateParticles() {
       continue;
     }
 
-    let speed = mag(p.vx, p.vy) / ((cellW+cellH)/2);
+    // The speed the settling rule sees. A model may scale it to the water nearest the bed
+    // (rules.nearBed: the river's friction); the grain still moves with the flow.
+    let speed = mag(p.vx, p.vy) / ((cellW+cellH)/2) * (R.nearBed ? R.nearBed(p.x, p.y) : 1);
 
     // Bed deposition: particles flowing over the drawn bed settle onto its surface,
     // so the deposited sediment accretes along the bedform and traces its shape. The
@@ -989,7 +1001,7 @@ function updateParticles() {
   for (let i = deposited.length - 1; i >= 0; i--) {
     let d = deposited[i];
     let vel = getVelocityAt(d.x, d.y);
-    let speed = mag(vel.vx, vel.vy) / ((cellW+cellH)/2);
+    let speed = mag(vel.vx, vel.vy) / ((cellW+cellH)/2) * (R.nearBed ? R.nearBed(d.x, d.y) : 1);
     if (speed > erosionThresh && random() < erosionProb) {
       let bedHere2 = bedPoints.length >= 2 ? bedZ(d.x, d.y) : 0;
       let resist = bedHere2 > 0 ? 1.0/(1.0 + (bedHere2/160)*2.0) : 1.0;
@@ -2726,6 +2738,10 @@ function updateTimelineVisibility() {
 //     particleLost(p) {}              // a grain left the canvas or aged out without settling
 //                                     // (or the particles were reset); a model that takes sand
 //                                     // from the bed for its grains puts it back here
+//     rules.nearBed(x, y)             // factor on the speed the settling and lifting rules
+//                                     // compare with their thresholds (default 1)
+//     passable                        // null, or a flow-grid array: 1 where water crosses an
+//                                     // obstacle's cell (a spilling dam); grains go through
 //   });
 //
 // The contract between the two is the flow grid: NX x NY cells plus a one-cell border,

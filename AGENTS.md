@@ -19,7 +19,7 @@ layer a change belongs to before making it.
 | File | Layer | What it is | Who else uses it |
 |---|---|---|---|
 | `index.html` | **interface** | Canvas, sediment particles, drawn bed (transect + cross-sections), deposit, obstacles and their timeline, 3D view, sidebar. Knows nothing about how water moves. | Every repo, byte for byte |
-| `model.js` | **model** | How the water moves. Here: the river (Stam stable-fluids solver, friction, the bed as depth). Writes the flow field the interface moves sediment through. | Repos that want the river |
+| `model.js` | **model** | How the water moves. Here: the river (a staggered-grid depth-averaged solver, friction, the bed as depth, dams that spill). Writes the flow field the interface moves sediment through. | Repos that want the river |
 | `site.js` | **site** | What this repo does with the scene. Here: the OpenFOAM case export. | Nobody; each repo has its own |
 
 The same split applies to tests: `dev/headless_harness.js` (interface), `dev/model_checks.js`
@@ -178,9 +178,12 @@ The harness loads the page the way a browser does (inline script, then `model.js
   and over the canvas zooms (Shift turns an object), the zoom goes 1x to 10x about the pointer
   with clicks landing where they point, the middle button, Alt + drag and the
   arrow keys pan inside the scene, the thumbnail shows the zoom, and 0 or the bed editor reset it, nothing goes non-finite.
-- **River model** (`dev/model_checks.js`, 13): the scene carries the inflow, sediment travels downstream, friction slows
-  the field, the friction brush adds and subtracts, still water stays still, leftover motion
-  stays bounded, and the bed is in the flow (see below).
+- **River model** (`dev/model_checks.js`, 24): the scene carries the inflow, sediment travels
+  downstream, friction makes more of it settle over a drawn bed, the friction brush adds and
+  subtracts, still water stays still, with the inflow shut the water comes to rest, the bed is
+  in the flow (see below), and the staggered solver's own checks: a gap passes all the water,
+  a dam holds the river until its pond reaches the crest and then spills, a slot loses head,
+  rough ground turns the water aside, and no face into a solid carries water.
 - **This site** (`dev/site_checks.js`, 3): the export backend mounts, the steps shown after an
   export name only files the case contains, and the real case
   generator builds a case from `sceneState()`.
@@ -208,32 +211,41 @@ Rules that have earned their place:
 
 ## The river model (`model.js`)
 
-Real-time 2D Stam solver on the 160 x 90 grid, inflow on the left, open outflow on the
-right, global friction plus painted friction zones, and the bed in the flow.
+A real-time 2D depth-averaged solver on a staggered (MAC) grid, 160 x 90 cells, inflow on
+the left, open outflow on the right, global friction plus painted friction zones, and the bed
+in the flow. `dev/MAC-GRID.md` has the design, the measurements and the comparison with the
+collocated Stam solver it replaced on 2026-11-18. Each of these was measured and is covered
+by a check. Do not undo them.
 
-The bed is in the flow, drawn and deposited. With either present, `velocityStep()` uses
-`projectDepth()`, which conserves discharge (`div(h u) = 0`) on a relative depth grid with
-the same px-to-metre mapping as the export. With neither it runs the plain `project()`
-exactly as before. Each of these was measured and is covered by a check; do not undo them:
-
-- **`projectDepth()` starts from `sectionPressure()`**, an exact tridiagonal solve of the
-  along-channel pressure. Started from zero, 30 sweeps gave a 1% speed-up over a rise that
-  should give 33%.
-- **It does not carry pressure between frames.** That also converges, and it kicks the field
-  by up to ten times the inflow speed whenever the flow changes abruptly.
-- **The outflow is open** (`setBndPressureOpen`). Closed like `project()`'s, a converged
-  solve turns the inflow/outflow mismatch into a false source.
-- **A solid neighbour stands in the cell's own pressure in the velocity correction**, in
-  both `projectDepth()` and `project()`. Reading a solid cell's zero blew the flow up next to
-  obstacles (in `project()` too, until the 2026-11-17 stress test found it there).
+- **The normal velocity lives on faces** (`mac.uF`, `mac.vF`), averaged to cell centres into
+  `u` and `v` each step. A face is open only if both its cells are water connected to the
+  outflow. The collocated solver let water through faces against a wall and lost or made it
+  at obstacles.
+- **The pressure solve runs to a residual** (`MAC_TOL`), conjugate gradients preconditioned
+  with MIC(0) plus an exact column-sum solve. Discharge is then the same through every
+  column of faces, with or without obstacles. With a bed, drawn or deposited, it enforces
+  `div(h u) = 0` on the same px-to-metre mapping as the OpenFOAM export.
+- **Advection moves the field as far as a grain moves** (`MAC_ADV = 4 * DT`). The old scale
+  (`DT * NX`) was 40 times that and copied a jet far downstream.
+- **All drag acts before the solve** (`macDrag()`), so none of it takes water out of the river.
+  Bed friction is stronger in shallow water, and narrow openings lose head (`K_OPEN`).
+- **Friction reaches the sediment through `rules.nearBed`**, the speed the settling and
+  lifting rules see, times `(1 + f)^-0.6`. At a fixed discharge and slope Manning's equation
+  gives speed as n^-0.6, and friction f is read as raising n by 1 + f (a modelling choice).
+  Slowing the grains themselves cut the supply and lowered the deposit as friction rose.
+- **A wall across the whole channel is a dam.** Its pond stores the inflow and settled sand
+  until the level passes `WALL_FREEBOARD`, then the wall spills as a weir (`WEIR_C`), and the
+  interface lets grains over the crest (`model.passable`).
 - **The interface restarts a flow that goes non-finite** (`flowFinite()` after the spin-up
   and every step), calls the model's `restart()`, and says so in the HUD for a few seconds.
   R does the same, so a bad state never survives a restart.
+- If anything other than the solver writes `u` or `v` (R, a restart, a check), the faces are
+  rebuilt from them, so zeroing `u` and `v` puts the water at rest.
 - Deposit is averaged over the flow cell before it becomes depth.
-- `velocityStep()` advects `vPrev` into `v`, so the cross-flow's history lives in `vPrev`.
-  Zeroing `u` and `v` alone does not put the water at rest.
-- Against OpenFOAM on a drawn rise with one obstacle (880k cells, 2026-11-13): RMS
-  difference 23% -> 15% of inflow, bias -15% -> -1%, correlation -0.07 -> 0.51.
+
+Against OpenFOAM on a drawn rise with one obstacle (880k cells, 2026-11-13), the collocated
+solver had an RMS difference of 15% of inflow, bias -1% and correlation 0.51. That comparison
+has not been re-run for this solver.
 
 Known and left alone: `setup()` sets `cellW = width / (NX + 2)` and `windowResized()` sets
 `width / NX`; and `index.html` sets `p5.disableFriendlyErrors` one line before p5 loads,

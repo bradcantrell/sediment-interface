@@ -2,8 +2,9 @@
 // by every repo that uses the interface; these travel with model.js.
 //
 //   - sediment travels downstream
-//   - friction slows the field, and the friction brush adds and subtracts
-//   - still water over a sloping bed stays still; leftover motion stays within its bound
+//   - friction slows the grains near the bed and turns the water from rough ground, and the
+//     friction brush adds and subtracts
+//   - still water over a sloping bed stays still; with the inflow shut the water slows toward rest
 //   - the bed is in the flow: speed-up over a rise equals the depth ratio, discharge is
 //     conserved, a uniform rise changes nothing, deposit counts as bed
 //
@@ -30,24 +31,30 @@ module.exports = function ({ app, S, check }) {
   }
 
   // ---------------------------------------------------------------- friction reaches the physics
+  // Friction acts before the pressure solve (2026-11-18), so it cannot take water out of the
+  // river. On the sediment it acts through rules.nearBed: the settling and lifting rules see
+  // the speed times (1 + f)^-0.6 (Manning's backwater, see model.js), so over a drawn bed more
+  // settles and less is lifted. Measured 2026-11-18 over 3000 steps of this kind of scene: the
+  // deposit 6.2k at friction 0, 9.9k at 1, 69k at 3. 300 frames here, from the same start.
   {
-    const meanSpeed = () => {
-      const U = S().U, V = S().V;
-      let s = 0, n = 0;
-      for (let i = 0; i < U.length; i++) {
-        const m = Math.abs(U[i]) + Math.abs(V[i]);
-        if (isFinite(m)) { s += m; n++; }
-      }
-      return n ? s / n : 0;
+    const st = S(), w = st.width;
+    const f0 = app.run("model.rules.nearBed(width / 2, height / 2)");
+    app.setFriction(3);
+    const f3 = app.run("model.rules.nearBed(width / 2, height / 2)");
+    const savedBed = st.bedPoints;
+    const grow = (fr) => {
+      app.setFriction(fr);
+      app.setBedPoints([{ x: w * 0.15, z: 10 }, { x: w * 0.5, z: 120 }, { x: w * 0.85, z: 20 }]); app.rebuildUserBedGrid();
+      app.run("depoGrid.fill(0); deposited = []; restartFlow(false); initParticles(false); model.bedChanged()");
+      for (let k = 0; k < 300; k++) app.draw();
+      return app.run("depoGrid.reduce((a, b) => a + b, 0)");
     };
+    const d0 = grow(0), d3 = grow(3);
+    check(f0 === 1 && Math.abs(f3 - Math.pow(4, -0.6)) < 1e-12 && d3 > 1.15 * d0, "friction makes more of the sediment settle over a drawn bed",
+      `near-bed factor ${f0} -> ${f3.toFixed(3)} at friction 3; deposit after 300 frames ${d0.toFixed(0)} -> ${d3.toFixed(0)}`);
     app.setFriction(0);
-    for (let i = 0; i < 30; i++) app.velocityStep();
-    const fast = meanSpeed();
-    app.setFriction(2.5);
-    for (let i = 0; i < 30; i++) app.velocityStep();
-    const slow = meanSpeed();
-    check(slow < fast, "friction slows the solved field", `mean |u|+|v| ${fast.toFixed(4)} -> ${slow.toFixed(4)}`);
-    app.setFriction(0);
+    app.setBedPoints(savedBed); app.rebuildUserBedGrid();
+    app.run("depoGrid.fill(0); deposited = []; restartFlow(false); model.bedChanged()");
   }
 
   // ---------------------------------------------------------------- every friction change reaches the physics
@@ -103,8 +110,8 @@ module.exports = function ({ app, S, check }) {
     app.run("flowRestartedAt = -1");
     for (let i = 0; i < 10; i++) app.draw();
     app.run("restartFlow(false)");
-    const rest = app.run("[uPrev, vPrev, p].every(a => a.every(x => x === 0)) && u.every(x => x === 0) && v.every(x => x === 0)");
-    check(rest, "restarting the flow (R) clears the solver's own fields", rest ? "u, v, uPrev, vPrev, p all zero" : "something kept its values");
+    const rest = app.run("[mac.uF, mac.vF, mac.p].every(a => a.every(x => x === 0)) && u.every(x => x === 0) && v.every(x => x === 0) && mac.store === 0");
+    check(rest, "restarting the flow (R) clears the solver's own fields", rest ? "u, v, the faces, the pressure and any pond all zero" : "something kept its values");
     for (let k = 0; k < 80; k++) app.run("simTime += DT; model.step()");
   }
 
@@ -159,48 +166,23 @@ module.exports = function ({ app, S, check }) {
   }
 
   // ---------------------------------------------------------------- still water
-  // The well-balanced question: on a sloping bed with no inflow, should anything move?
+  // The well-balanced question: on a sloping bed with no inflow, should anything move? No.
+  // The bed enters the flow as depth in div(h u) = 0 and nothing else, so it cannot move
+  // still water (9a).
   //
-  // What we found, by elimination, on 2026-10-28:
-  //
-  //   - The velocity solver has NO bed term at all. velocityStep() is inflow, diffuse,
-  //     project, advect, project, friction. Nothing reads bedZ. The bed steers particles
-  //     through updateParticles(), not the solved field. So "well-balanced with respect to
-  //     the bed" is currently vacuous: there is no bed coupling to unbalance. Hydrostatic
-  //     reconstruction becomes relevant only if and when a bed-pressure term is added.
-  //   - There IS a steady residual, mean 0.08 and max ~0.7, about 3% of the ~2.5 mean speed
-  //     a flowing field carries in check 4. It does not grow (n=120 0.776, n=360 0.628,
-  //     n=1200 0.709), so it is a standing offset, not an instability.
-  //   - It is produced by the pressure projection. Disabling project() drives the residual to
-  //     machine zero (2.6e-29). Reducing the Poisson iterations from 4 to 1 also drives it to
-  //     zero. It is not the bed, not the pressure warm start (clearing p changes nothing), and
-  //     only partly the obstacles (0.35 with, 0.24 without). The remaining source is a
-  //     divergence at the inflow boundary being projected into the domain.
-  //
-  // The tolerances below lock in current behaviour rather than demand the ideal: roughly twice
-  // the measured value, so a regression fires and an improvement does not. They must not be
-  // raised to make a worse solver pass — that is how a bad model starts scoring well.
-  //
-  // Revised 2026-11-13, when the bed (drawn and deposited) entered the velocity solver:
-  //
-  //   - The residual above is not generated from rest. This block zeroes u and v but not
-  //     vPrev, and velocityStep() advects vPrev into v, so the run starts with the previous
-  //     check's cross-flow still in it. Zero vPrev and uPrev as well and the field stays at
-  //     exactly 0 for 3000 steps, over a sloping bed with deposit on it. That is now check 9a,
-  //     and it is the well-balanced property the first note called vacuous: there is a bed
-  //     coupling now, and it does not move still water.
-  //   - What 9b measures is therefore leftover motion with the inflow shut. It neither decays
-  //     nor grows in either projection (sum of u^2 + v^2 over 3000 steps: plain 94 -> 145,
-  //     depth-weighted 218 -> 144).
-  //   - STILL_TOL_MEAN goes from 0.15 to 0.30. Reason: this block draws a bed, so it now runs
-  //     through projectDepth(), where the same leftover measures 0.11 to 0.17 across runs
-  //     (deposit positions are random) against 0.08 to 0.10 in project(). 0.30 is twice the
-  //     measured value, the same rule as before. STILL_TOL_MAX is unchanged.
-  const STILL_TOL_MEAN = 0.30;   // measured 0.11-0.17 through projectDepth(); was 0.15 for 0.080 through project()
-  const STILL_TOL_MAX  = 1.50;   // measured 0.7-1.0
+  // 9b used to measure the motion the collocated solver left with the inflow shut: it neither
+  // decayed nor grew (mean 0.08-0.17, max 0.7-1.0, held to 0.30 and 1.50; notes of
+  // 2026-10-28 and 2026-11-13 in git history). It came from the projection, which never drove
+  // the divergence to zero. The staggered solver does, so with the inflow shut a running river
+  // now comes to rest: the through-flow stops at once and what is left turning about decays,
+  // slowly, since little but the drag of narrow openings and diffusion takes it out. Measured
+  // 2026-11-18 from a developed flow over this bed: mean 0.23 after 120 steps, 0.17 after
+  // 360, 0.095 after 1200. The check asks that it decays (the mean at least halves from 120 to
+  // 1200 steps) and holds the 1200-step mean to twice the measured value, the rule as before.
+  const STILL_TOL_MEAN = 0.19;
+  const STILL_TOL_MAX  = 0.70;
   {
     const U = S().U, V = S().V;
-    app.setInflow(0);
     app.setFriction(0);
     const w = S().width, h = S().height;
     app.setBedPoints([{ x: w * 0.15, z: 10 }, { x: w * 0.5, z: 120 }, { x: w * 0.85, z: 20 }]);
@@ -216,32 +198,33 @@ module.exports = function ({ app, S, check }) {
       }
       return { max: mx, mean: s / Math.max(c, 1) };
     };
-    // 9a. From true rest nothing may move, bed or no bed. The whole solver state is zeroed,
-    // then restored, so 9b still starts from the leftover cross-flow it has always measured.
+    for (let k = 0; k < 150; k++) app.velocityStep();   // a developed flow over the bed
+    const keep = app.run("[u.slice(), v.slice()]");
+    app.setInflow(0);
+    // 9a. From true rest nothing may move.
     {
-      const keep = app.run("[u.slice(), v.slice(), uPrev.slice(), vPrev.slice()]");
-      app.run("u.fill(0); v.fill(0); uPrev.fill(0); vPrev.fill(0)");
+      app.run("u.fill(0); v.fill(0)");
       for (let k = 0; k < 600; k++) app.velocityStep();
       const r = sample();
       check(app.run("depthGrid") !== null && r.max < 1e-9,
             "still water over a sloping bed stays still", `max |u|+|v| ${r.max.toExponential(1)} after 600 steps, bed in the solver: ${app.run("depthGrid") !== null}`);
-      globalThis.__keep = keep;
-      app.run("u.set(globalThis.__keep[0]); v.set(globalThis.__keep[1]); uPrev.set(globalThis.__keep[2]); vPrev.set(globalThis.__keep[3])");
     }
-    U.fill(0); V.fill(0);
+    // 9b. From the developed flow, with the inflow shut.
+    globalThis.__keep = keep;
+    app.run("u.set(globalThis.__keep[0]); v.set(globalThis.__keep[1])");
     const marks = [120, 360, 1200];
-    const out = [];
+    const out = [], means = [];
     let done = 0;
     for (const m of marks) {
       while (done < m) { app.velocityStep(); done++; }
       const r = sample();
+      means.push(r.mean);
       out.push(`n=${m}: max ${r.max.toExponential(2)} mean ${r.mean.toExponential(2)}`);
     }
-    console.log("  ....  still water: " + out.join(" | ") + "   (target 0 for both)");
     const s = sample();
-    check(isFinite(s.max) && s.mean <= STILL_TOL_MEAN && s.max <= STILL_TOL_MAX,
-          "leftover motion with the inflow shut stays bounded",
-          `mean ${s.mean.toFixed(3)} (tol ${STILL_TOL_MEAN}), max ${s.max.toFixed(3)} (tol ${STILL_TOL_MAX})`);
+    check(isFinite(s.max) && means[2] <= 0.5 * means[0] && means[1] <= means[0] && s.mean <= STILL_TOL_MEAN && s.max <= STILL_TOL_MAX,
+          "with the inflow shut the water slows toward rest",
+          `${out.join(" | ")} (tol at 1200: mean ${STILL_TOL_MEAN}, max ${STILL_TOL_MAX})`);
   }
 
   // ---------------------------------------------------------------- the drawn bed reaches the flow
@@ -257,7 +240,7 @@ module.exports = function ({ app, S, check }) {
     // Time-mean u for a bed, started from uniform flow so no run inherits the last one's field.
     const runMean = (pts) => {
       app.setBedPoints(pts); app.rebuildUserBedGrid();
-      app.run("u.fill(inflowVel); v.fill(0); uPrev.fill(inflowVel); vPrev.fill(0)");
+      app.run("u.fill(inflowVel); v.fill(0)");
       for (let k = 0; k < 500; k++) app.velocityStep();
       const m = new Float64Array(st0.U.length), n = 60;
       for (let k = 0; k < n; k++) { app.velocityStep(); const U = S().U; for (let q = 0; q < m.length; q++) m[q] += U[q] / n; }
@@ -267,7 +250,7 @@ module.exports = function ({ app, S, check }) {
 
     const flat = runMean([]);
     check(app.run("depthGrid") === null && Math.abs(col(flat, NX >> 1) - 2.5) < 0.01,
-          "with no bed drawn the solver runs its plain projection", `mid-channel u ${col(flat, NX >> 1).toFixed(3)}`);
+          "with no bed drawn every depth is 1 and the channel runs at the inflow speed", `mid-channel u ${col(flat, NX >> 1).toFixed(3)}`);
 
     // A rise across the whole width: one-dimensional, so u must scale as 1/depth.
     const hump = runMean([{ x: w * 0.1, z: 0 }, { x: w * 0.5, z: 160 }, { x: w * 0.9, z: 0 }]);
@@ -307,7 +290,7 @@ module.exports = function ({ app, S, check }) {
       app.run("depoGrid.fill(0)");
       const cleared = runMean([]);
       check(app.run("depthGrid") === null && Math.abs(col(cleared, NX >> 1) - 2.5) < 0.01,
-            "clearing the deposit returns the solver to its plain projection", `mid-channel u ${col(cleared, NX >> 1).toFixed(3)}`);
+            "clearing the deposit returns the solver to a flat bed", `mid-channel u ${col(cleared, NX >> 1).toFixed(3)}`);
     }
 
     app.setBedPoints(savedBed); app.run("bedXSections = globalThis.__xs", (globalThis.__xs = savedXS)); app.rebuildUserBedGrid();
@@ -315,14 +298,13 @@ module.exports = function ({ app, S, check }) {
   }
 
   // ---------------------------------------------------------------- the staggered solver conserves water at obstacles
-  // The collocated solver loses or makes water at obstacles (2026-11-17 stress test, items 5,
-  // 20, 21): a gap in a wall passed 12-45% of the flow, the flow behind a wide wall was up to
-  // 170% of the inflow, a wall dropped into running water left 45-66% flowing behind it, and
-  // under friction the plain projection lost 99.9% of the discharge by the outflow. The MAC
-  // solver (solverMode 'mac') carries the normal velocity on faces and solves div(h u) = 0 to
-  // a residual, so the discharge through every column of faces is the inflow's. These checks
-  // run it whatever the page's default is, then put the default back. The stam path fails
-  // all but the last of them.
+  // The collocated solver this replaced lost or made water at obstacles (2026-11-17 stress
+  // test, items 5, 20, 21): a gap in a wall passed 12-45% of the flow, the flow behind a wide
+  // wall was up to 170% of the inflow, a wall dropped into running water left 45-66% flowing
+  // behind it, and under friction the plain projection lost 99.9% of the discharge by the
+  // outflow. The MAC solver carries the normal velocity on faces and solves div(h u) = 0 to a
+  // residual, so the discharge through every column of faces is the inflow's, less what a
+  // dammed pond stores. The collocated solver failed checks 1-3 (dev/MAC-GRID.md).
   //
   // Discharge here is the sum of h * u over a column of faces (mac.hU, mac.uF), and also over
   // a column of cells (depthGrid, u), which is what the stress test measured and what the
@@ -330,11 +312,11 @@ module.exports = function ({ app, S, check }) {
   // on faces and 0.1% on cells (where the depth is taken at the centre, not on the face).
   {
     const st0 = S(), NX = st0.NX, NY = st0.NY, IXf = (i, j) => i + j * (NX + 2);
-    const keep = { mode: app.run("solverMode"), obs: app.run("JSON.stringify(obstacles)"), bed: st0.bedPoints,
+    const keep = { obs: app.run("JSON.stringify(obstacles)"), bed: st0.bedPoints,
                    xs: app.run("bedXSections"), fric: app.run("friction"), inflow: st0.inflowVel };
     const clips = [{ start: 0, dur: 1e9 }];
     const setScene = (obs, bed, fric) => {
-      app.run(`solverMode = 'mac'; obstacles = ${JSON.stringify(obs)}; buildSolidMask(); solidMaskDirty = false;
+      app.run(`obstacles = ${JSON.stringify(obs)}; buildSolidMask(); solidMaskDirty = false;
                bedXSections = []; depoGrid.fill(0); friction = ${fric}; fricGrid = null; fricDirty = true; inflowVel = 2.5;
                restartFlow(false); simTime = 6.4`);
       app.setBedPoints(bed); app.rebuildUserBedGrid();
@@ -358,21 +340,96 @@ module.exports = function ({ app, S, check }) {
         `${open} rows open at column ${wc}; faces ${fq.map(q => (100 * q / q0).toFixed(2)).join(", ")}% and cells upstream, at the gap, downstream ${cq.map(q => (100 * q / q0).toFixed(1)).join(", ")}% of the inflow ${q0.toFixed(1)}`);
     }
 
-    // 2. A wall dropped into running water. Across part of the channel: the flow behind it is
-    // the inflow's from the first step after. Across all of it: the inflow cannot reach the
-    // outflow, so no water passes any column (a rigid-lid model has no way over the top). What
-    // was moving behind the wall may still turn about there, but carries nothing downstream.
+    // 2. A wall dropped into running water, across part of the channel: the flow behind it is
+    // the inflow's from the first step after.
     {
       setScene([], bedPts, 0);
       steps(150);
       app.run(`obstacles = ${JSON.stringify([gapWall])}; solidMaskDirty = true; buildSolidMask(); solidMaskDirty = false`);
       steps(1);
       const qGap = [15, wallCol()[0], 100, 140].map(faceQ), q0g = faceQ(0);
-      app.run(`obstacles = ${JSON.stringify([{ ...gapWall, h: st0.height * 3 }])}; buildSolidMask(); solidMaskDirty = false`);
+      check(spread(qGap, q0g) < 0.005, "MAC: a wall dropped into running water conserves the flow at once",
+        `gap wall, one step after: ${qGap.map(q => (100 * q / q0g).toFixed(2)).join(", ")}% of the inflow upstream, at the gap, behind`);
+    }
+
+    // 2b. Across all of it, the wall is a dam (Brad, 2026-11-18: spill over when enough water
+    // or sediment has built up). The inflow is stored as a pond whose level rises; nothing
+    // passes until the level reaches the crest, WALL_FREEBOARD above the river; then the wall
+    // spills as a weir. Water is conserved throughout: inflow = what the pond stores + what
+    // goes downstream.
+    {
+      const fullWall = { ...gapWall, h: st0.height * 3 };
+      setScene([], [], 0);
+      steps(150);
+      app.run(`obstacles = ${JSON.stringify([fullWall])}; buildSolidMask(); solidMaskDirty = false`);
       steps(1);
-      const qFull = [0, 15, 100, 140, NX].map(faceQ);
-      check(spread(qGap, q0g) < 0.005 && Math.max(...qFull.map(Math.abs)) < 0.005 * q0g, "MAC: a wall dropped into running water conserves the flow at once",
-        `gap wall, one step after: ${qGap.map(q => (100 * q / q0g).toFixed(2)).join(", ")}% of the inflow upstream, at the gap, behind; full wall: ${qFull.map(q => (100 * q / q0g).toFixed(2)).join(", ")}% at the inflow, upstream, behind, outflow`);
+      const pond = app.run("[mac.nPond, mac.weirWidth, WALL_FREEBOARD, MAC_ADV]");
+      const qIn = app.run("mac.qIn");
+      // Steps until the level reaches the crest, from the pond's area and the inflow.
+      const fillSteps = Math.ceil(pond[2] * pond[0] / (qIn * pond[3]));
+      steps(Math.max(1, fillSteps - 3));
+      const before = [app.run("mac.spilling"), Math.max(...[100, 140, NX].map(i => Math.abs(faceQ(i))))];
+      steps(40);
+      const after = app.run("[mac.spilling, mac.head, mac.qSpill, mac.qIn, mac.level]");
+      const down = [100, 140, NX].map(faceQ);
+      // The pond stores qIn - qSpill each step; downstream carries qSpill.
+      const okFill = !before[0] && before[1] < 0.005 * qIn;
+      const okSpill = after[0] && after[2] > 0 && spread(down, after[2]) < 0.01;
+      check(pond[0] > 0 && okFill && okSpill, "MAC: a wall across the whole channel holds the river until the pond reaches its crest, then spills",
+        `pond ${pond[0]} cells, crest ${pond[1]} cells long; ${fillSteps - 3} steps in (crest due at ${fillSteps}): spilling ${before[0]}, largest discharge behind ${before[1].toExponential(1)}; 40 steps later: head ${after[1].toFixed(3)}, spill ${after[2].toFixed(1)} of ${after[3].toFixed(1)}, discharge behind ${down.map(q => q.toFixed(1)).join(", ")}`);
+      // Long after, the spill carries the whole inflow (the pond has stopped rising).
+      steps(1500);
+      const late = app.run("[mac.qSpill, mac.qIn, mac.head]"), downL = [100, NX].map(faceQ);
+      check(Math.abs(late[0] / late[1] - 1) < 0.02 && spread(downL, late[1]) < 0.03,
+        "MAC: a spilling dam settles to passing all the inflow over its crest",
+        `after 1500 more steps: spill ${late[0].toFixed(1)} of an inflow of ${late[1].toFixed(1)}, head over the crest ${late[2].toFixed(3)} (weir law ${((late[1] / (app.run("WEIR_C") * pond[1])) ** (2 / 3)).toFixed(3)}); discharge behind ${downL.map(q => q.toFixed(1)).join(", ")}`);
+      // Grains go over a spilling crest instead of bouncing off it.
+      const g = app.run(`(() => { const pass = model.passable; if (!pass) return null;
+        let c = -1; for (let k = 0; k < pass.length; k++) if (pass[k]) { c = k; break; }
+        const W = NX + 2, i = c % W, j = (c - i) / W, x = (i + 0.5) * cellW, y = (j + 0.5) * cellH;
+        const keepP = particles; particles = [{ x, y, vx: 0, vy: 0, born: simTime }];
+        updateParticles(); const p = particles[0]; particles = keepP;
+        return [x, y, p ? p.x : null, p ? p.y : null, getVelocityAt(x, y).vx]; })()`);
+      check(g && g[2] !== null && g[2] > g[0] && Math.abs(g[3] - g[1]) < 2 && g[4] > 0,
+        "MAC: grains cross a spilling crest with the water",
+        g ? `grain on the crest at ${g[0].toFixed(0)},${g[1].toFixed(0)} moved to ${g[2] === null ? 'gone' : g[2].toFixed(1) + ',' + g[3].toFixed(1)}; water there ${g[4].toFixed(1)} px/frame` : "nothing passable");
+      // Sediment settling in the pond takes up room: the level rises by its volume.
+      setScene([], [], 0);
+      app.run(`obstacles = ${JSON.stringify([fullWall])}; buildSolidMask(); solidMaskDirty = false`);
+      steps(2);
+      const l0 = app.run("mac.level"), s0 = app.run("mac.store");
+      app.run("for (let y = 2; y < height; y += 4) for (let x = cellW * 3; x < width * 0.4; x += 4) addDeposit(x, y, 20); model.bedChanged()");
+      steps(1);
+      const r = app.run(`(() => { let sed = 0; for (let k = 0; k < mac.nPond; k++) { let c = mac.pondCells[k]; sed += mac.h0[c] - depthGrid[c]; } return [mac.level, mac.store, sed / mac.nPond]; })()`);
+      const want = r[1] / pond[0] + r[2];
+      check(r[2] > 0.005 && Math.abs(r[0] - want) < 1e-9 && r[0] > l0 + r[2] * 0.99,
+        "MAC: sediment settling in a pond lifts its level",
+        `level ${l0.toFixed(4)} -> ${r[0].toFixed(4)}, of which sediment ${r[2].toFixed(4)} and water ${(r[1] / pond[0]).toFixed(4)}`);
+      app.run("depoGrid.fill(0); model.bedChanged()");
+    }
+
+    // 2c. A narrow opening loses head (K_OPEN), so less of the river goes through a slot. The
+    // scene is the stress test's R8: a wall leaving a 2-row slot at the bank and a 24-row
+    // gap. Potential flow (dev/mac-grid/potential.py) puts 22% of the discharge through the
+    // slot, and the solver at the old advection scale gave 21%. At the particles' scale
+    // (MAC_ADV) diffusion counts for more and the slot carries 8%; the head loss takes that
+    // to 7%. The check runs the scene with K_OPEN and without, from the same start.
+    {
+      const H0 = st0.height, rowsPx = H0 / NY;
+      const slotWall = [{ type: "rect", x: st0.width * 0.45, y: rowsPx * 2 + (H0 * 0.5 - rowsPx * 2) / 2, w: 40, h: H0 * 0.5 - rowsPx * 2, rotation: 0, clips },
+                        { type: "rect", x: st0.width * 0.45, y: H0 * 0.5 + rowsPx * 24 + (H0 * 0.5 - rowsPx * 24) / 2, w: 40, h: H0 * 0.5 - rowsPx * 24, rotation: 0, clips }];
+      const share = () => app.run(`(() => { const sol = solid; let i = 0, best = 0; for (let q = 1; q <= NX; q++) { let n = 0; for (let j = 1; j <= NY; j++) if (sol[IX(q, j)]) n++; if (n > best) { best = n; i = q; } }
+        let runs = [], cur = null; for (let j = 1; j <= NY; j++) { const c = IX(i, j); if (!sol[c]) { if (!cur) { cur = { j0: j, q: 0 }; runs.push(cur); } cur.q += mac.hU[c] * mac.uF[c]; } else cur = null; }
+        const tot = runs.reduce((a, b) => a + b.q, 0); return [runs.length, runs.length ? runs[0].q / tot : NaN]; })()`);
+      const k = app.run("K_OPEN");
+      setScene(slotWall, [], 0); steps(300);
+      const withLoss = share();
+      app.run("K_OPEN = 0");
+      setScene(slotWall, [], 0); steps(300);
+      const without = share();
+      app.run(`K_OPEN = ${k}`);
+      check(withLoss[0] === 2 && without[0] === 2 && k > 0 && withLoss[1] < 0.9 * without[1], "MAC: a narrow slot loses head and carries less of the river",
+        `the 2-row slot carries ${(100 * withLoss[1]).toFixed(1)}% of the flow with the head loss (K_OPEN ${k}), ${(100 * without[1]).toFixed(1)}% without (inviscid 22%)`);
     }
 
     // 3. No face that touches a solid cell carries water, and every connected cell has
@@ -387,9 +444,8 @@ module.exports = function ({ app, S, check }) {
         for (let j = 0; j <= NY; j++) for (let i = 1; i <= NX; i++) { let c = IX(i, j);
           let a = j >= 1 && solid[c], b = j < NY && solid[c + W]; if ((a || b || j === 0 || j === NY) && M.vF[c] !== 0) leak++; }
         return [leak, M.nCells]; })()`);
-      // The divergence straight after the projection: one more step with friction off, since
-      // painted or global friction scales each face after the solve.
-      app.run("friction = 0; fricDirty = true"); steps(1);
+      // Friction acts before the solve, so the divergence after it is the solver's own.
+      steps(1);
       const d = app.run(`(() => { const M = mac, W = NX + 2; let mx = 0; for (let k = 0; k < M.nCells; k++) { let c = M.cells[k];
         let q = M.hU[c] * M.uF[c] - M.hU[c-1] * M.uF[c-1] + M.hV[c] * M.vF[c] - M.hV[c-W] * M.vF[c-W]; mx = Math.max(mx, Math.abs(q)); } return mx; })()`);
       const tol = app.run("MAC_TOL");
@@ -397,18 +453,34 @@ module.exports = function ({ app, S, check }) {
         `${r[0]} faces against a solid carry water; largest |div(h u)| ${d.toExponential(2)} over ${r[1]} cells (tolerance ${tol})`);
     }
 
-    // 4. Friction does not drain the channel. Uniform friction scales every face alike, so
-    // the discharge is the same at every column whatever its value; the plain projection lost
-    // 99.9% of it by the outflow at friction 3.
+    // 4. Friction does not drain the channel: the discharge is the same at every column
+    // whatever its value; the collocated solver's plain projection lost 99.9% of it by the
+    // outflow at friction 3.
     {
       setScene([], [], 3);
       steps(13);    // about one second, when the plain projection was worst
       const q = [5, 40, 80, 120, 155].map(cellQ);
-      check(spread(q, q[0]) < 0.005, "MAC: friction slows the river without draining it along the channel",
+      check(spread(q, q[0]) < 0.005, "MAC: friction does not drain the river along the channel",
         `friction 3, one second from rest: discharge at columns 5, 40, 80, 120, 155 is ${q.map(x => x.toFixed(1)).join(", ")}`);
     }
 
-    app.run(`solverMode = '${keep.mode}'; obstacles = ${keep.obs}; buildSolidMask(); solidMaskDirty = true; depoGrid.fill(0); friction = ${keep.fric}; fricDirty = true; inflowVel = ${keep.inflow}; restartFlow(false)`);
+    // 5. Rough ground turns the water aside. A patch painted across the middle third of the
+    // channel: less of the river goes through it than through the same rows unpainted, and the
+    // column still carries all of it.
+    {
+      const rows = (i) => app.run(`(() => { let a = 0, t = 0; for (let j = 1; j <= NY; j++) { let c = IX(${i}, j), q = mac.hU[c] * mac.uF[c]; t += q; if (j > NY / 3 && j <= 2 * NY / 3) a += q; } return [a / t, t]; })()`);
+      setScene([], [], 0);
+      steps(100);
+      const ic = NX >> 1, plain = rows(ic);
+      app.run("ensureFricGrid(); fricGrid.fill(0); for (let y = height / 3; y <= 2 * height / 3; y += 10) for (let x = width * 0.4; x <= width * 0.6; x += 10) { fricPaint = 3; fricRadius = 20; paintFriction(x, y, 1); } fricPaint = 1; fricRadius = 40");
+      steps(100);
+      const rough = rows(ic), q0 = faceQ(0);
+      check(rough[0] < plain[0] - 0.02 && Math.abs(rough[1] / q0 - 1) < 0.005, "MAC: painted roughness turns the water aside without losing any",
+        `the middle third of the channel carries ${(100 * plain[0]).toFixed(1)}% of the river, ${(100 * rough[0]).toFixed(1)}% when painted rough; the column carries ${(100 * rough[1] / q0).toFixed(2)}% of the inflow`);
+      app.run("fricGrid.fill(0); fricDirty = true; redrawFricBuffer()");
+    }
+
+    app.run(`obstacles = ${keep.obs}; buildSolidMask(); solidMaskDirty = true; depoGrid.fill(0); friction = ${keep.fric}; fricDirty = true; inflowVel = ${keep.inflow}; restartFlow(false)`);
     app.setBedPoints(keep.bed); app.run("bedXSections = globalThis.__xs", (globalThis.__xs = keep.xs)); app.rebuildUserBedGrid();
     for (let k = 0; k < 80; k++) app.run("simTime += DT; model.step()");
   }

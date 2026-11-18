@@ -1,6 +1,8 @@
-# The staggered (MAC) flow solver: stage 1
+# The staggered (MAC) flow solver
 
-Branch `mac-grid`, from `shared-core` at 727dbb1. Written 2026-11-18.
+Stage 1 (below, up to "Stage 2") was written on branch `mac-grid` from 727dbb1, 2026-11-18,
+with the solver behind a `solverMode` switch. Stage 2 made it the only solver the same day,
+after Brad answered the five open questions. Its section is at the end.
 
 ## Why
 
@@ -143,35 +145,126 @@ faces carry water into solids, the gap passes 11%, over a bed the flow runs away
 - With the inflow at 0 the water is still (it used to keep a slow stir).
 - Open water costs a fifth of what it did; obstacles cost up to 50% more per step.
 
-## Stage 2
+## Stage 2: the only solver (2026-11-18)
 
-- Make `'mac'` the default, then retire `project()`, `projectDepth()`, `sectionPressure()`,
-  `linSolve()`/`diffuse()`/`advect()` and their notes, and the now-unused `uPrev`/`vPrev`.
-  Rework the still-water check (9b measures leftover motion the MAC solver does not have).
-- Fix the docs that claim conservation (AGENTS.md, "The river model"; the comments over
-  `projectDepth()`), and say what the new limits are.
-- Re-run the OpenFOAM comparison (drawn rise with one obstacle, 880k cells, 2026-11-13). The
-  old figures were RMS 15% of inflow, bias -1%, correlation 0.51.
-- Re-sync the bridge, which vendors `model.js` and `dev/model_checks.js`, and run the coastal
-  harness against the shared files (this branch does not touch `index.html`).
-- If 19 ms is too slow with obstacles: a multigrid preconditioner, or the old 30-sweep budget
-  with the column correction and a looser tolerance (1e-2 gives 13 ms and 0.01% spread).
+The collocated solver is gone: `solverMode`, `project()`, `projectDepth()`,
+`sectionPressure()`, `setBndPressureOpen()`, `linSolve()`, `diffuse()`, `advect()`,
+`addSource()` and `uPrev`/`vPrev`/`p`/`divArr`. `velocityStep()` is the MAC step. Brad's
+answers to the five questions, and what was built for each:
 
-## Open questions for Brad
+1. **A wall across the whole channel spills once enough water or sediment has built up.**
+   The water reached from the inflow that cannot get to the outflow is a pond (`macPond()`).
+   It stores the inflow and its level rises. Sediment settling in it takes up room and lifts
+   the level too.
+   Walls stand `WALL_FREEBOARD` above the river, a quarter of the 2 m depth (0.5 m). Past
+   that, every obstacle touching the pond is a broad-crested weir, `q = WEIR_C H^1.5`, and
+   its cells carry water H deep. `WEIR_C` = 2.41 is the textbook 1.705 m^0.5/s in this
+   model's units, where depth 1 is 2 m and speeds are in m/s as the OpenFOAM export reads
+   them (1.705 x 2^1.5 / 2). Each step the pond stores the inflow minus the spill, as a sink
+   in the pressure solve, so water is conserved throughout. The interface lets grains cross a spilling crest
+   (`model.passable`, a new optional hook in `index.html`).
+2. **Advection at the particles' speed.** `MAC_ADV = 4 * DT`, 0.32 cells per unit speed per
+   step, the distance the interface moves a grain. The old scale was 12.8, 40 times as far.
+3. **Head loss in narrow openings.** `du/dt = -K_OPEN |u| u / b` before the solve, b the
+   opening's width across the flow, `K_OPEN` = 0.25 (an entrance loss of K = 0.5).
+4. **Friction before the solve, and what the slider does.** All drag now acts before the
+   pressure solve, so friction cannot take water out of the river. Bed friction decays as
+   `exp(-f DT / h)`, so shallow water feels it more. A painted patch turns the water aside
+   and a drawn bed's deep channel takes more of it. On the sediment the slider acts through
+   `rules.nearBed`. The settling and lifting rules see the speed times `(1 + f)^-0.6`. By
+   Manning, a rougher bed carrying the same discharge runs deeper and slower, and a rigid
+   lid cannot deepen, so the slowing goes to the rules. Slowing the grains themselves was
+   tried first. Fewer grains came down the reach, so the deposit fell as friction rose.
+5. **The sediment thresholds were retuned.** The defaults came out best and are kept (below).
 
-1. A full-width wall stops the river. In a rigid-lid model water cannot go over the top. Is a
-   dam that stops everything right, or should a full blockage leak, overtop, or be refused?
-2. The advection scale is the old one, 12.8 cells per unit speed per step, about 40 times the
-   distance a particle moves. It is what makes a gap jet copy itself far downstream. Keep it
-   for the look, or tie it to the particle speed (stress-test item 20 asks for this decision)?
-3. Narrow slots carry fast jets now, by conservation. Should the friction slider, or a wall
-   drag, slow water in narrow openings, as real head loss would?
-4. Friction is applied after the solve, as before. With painted zones this leaves a small local
-   divergence for that frame (uniform friction scales all faces alike and keeps discharge
-   equal along the channel). Apply it before the solve instead? Then friction would no longer
-   lower the discharge, only reshape the flow, and the slider would do much less.
-5. Deposit at high friction drops by a factor of 3.7 in MAC mode, because water no longer
-   disappears downstream. The sediment thresholds were tuned on the old field. Retune them?
+### Numbers
+
+Same harness and canvas as stage 1. "Before" is the collocated solver at d48ec45.
+
+| Case | Before | Stage 1 | Stage 2 |
+|---|---|---|---|
+| Full-width wall, pond of 7020 cells: steps until it spills | never (45-65% leaked) | never (stopped) | 25 (`WALL_FREEBOARD` x area / inflow, as computed) |
+| Same, settled: spill over inflow; head over the crest against the weir law | - | - | 1.000; 1.025 against 1.025 |
+| R8 scene (a wall with a 2-row slot at the bank and a 24-row gap), the slot's share of the discharge | - | 21% (inviscid 22%) | 6.9% (8.1% with `K_OPEN` = 0) |
+| R8 scene, drawn bed, worst single-cell spike | 12.3x | 3.4x | 1.26x |
+| R8 scene, drawn bed, peak speed | 35.7, in open water | 37.8, in the slot | 31.3 at the first step from rest, then about 10 in the slot and 14.2 in open water |
+| Painted patch (zone mu 3) across the middle third: that third's share of the river | - | - | 33.3% -> 6.3%, total 100.00% |
+| Inflow shut on a developed flow, mean speed after 120 / 360 / 1200 steps | 0.08-0.17, steady | 0 (stage 1 measured from rest) | 0.23 / 0.17 / 0.095, decaying |
+
+The water does not stop at once with the inflow shut. With advection 40 times slower, only
+diffusion and the opening drag remove the eddies that are left.
+
+**The retune.** 3000 steps with particles, inflow 2.5, two obstacles (a rotated rectangle and
+a circle), deposit summed over the grid:
+
+| Scene | Before, friction 0 / 1 / 3 | Stage 2, friction 0 / 1 / 3 |
+|---|---|---|
+| Drawn bed | 6596 / 6451 / 6135 | 6224 / 9908 / 69169 |
+| No bed | 6322 / 6021 / 5529 | 1597 / not run / 1810 |
+
+The drawn bed is where most of the sediment physics happens. There the defaults (settle
+0.20, erode 1.00) put down 6% less than before at friction 0. Raising erode to 1.3 changed
+that by 1%. Raising it to 2.0 or settle to 0.4 sent the drawn-bed deposit to 14k and 63k,
+since the bed then barely erodes. So the defaults stay. Friction now raises deposition, as
+the page's guide says it should. At the slider's top, 3, the drawn-bed deposit is 11 times
+the default. That is the same runaway, on purpose: the near-bed factor is 0.44 there, so the
+bed barely erodes. Friction 3 stands for Manning's n four times the default, the step from
+a sand bed to a weedy or bouldery one. At 1 the deposit is 1.6 times. At inflow 5 the faster
+water still lifts most of it (18000 after 6000 steps, below). Before, it lowered it slightly (-7% over the bed at friction 3). The no-bed
+scene deposits a quarter of what it did. Before, 2377 of its 6322 sat against the rectangle
+and most of the rest in open water away from either obstacle. That came from water flowing
+into the obstacles, which carried grains with it, and from the slow single cells of the
+odd-even pattern. The circle's front now gets more (491 against 297). Neither solver builds
+a deposit in the lee of the circle (16 and 0). The lee is slower now (mean speed 1.04 against
+2.21) but few grains get into it.
+
+**Long runs** (`longrun.js`, 6000 steps, particles, drawn bed, painted friction, three
+obstacles, one of them switched in and out by the timeline): friction 3 and inflow 5 peaked at 16.4, deposit 18000. Friction 0 and
+inflow 2.5 peaked at 7.1, deposit 5989. Neither had a non-finite value or a restart.
+
+**Frame time**, `model.step()` alone (`timing.js`, load 2):
+
+| Scene | Before | Stage 1 | Stage 2 |
+|---|---|---|---|
+| Plain, no obstacle | 12.8 ms | 2.6 ms | 3.0 ms |
+| Plain, gap wall | 12.5 ms | 19.1 ms | 12.6 ms (25 iterations) |
+| Drawn bed, gap wall | 17.3 ms | 19.7 ms | 15.0 ms (41) |
+| Drawn bed, friction 3, three obstacles | 17.5 ms | 18.8 ms | 5.5 ms (2) |
+| Dam spilling | - | - | 3.3 ms |
+
+Slower advection leaves the solve less to correct each step.
+
+### Checks
+
+`node dev/headless_harness.js index.html`: 110 of 110 pass. New or rewritten in
+`dev/model_checks.js`:
+
+- friction makes more of the sediment settle over a drawn bed (replaces "friction slows the
+  solved field", which a solver that cannot lose water fails)
+- with the inflow shut the water slows toward rest (replaces the old 9b bound on leftover motion)
+- a wall across the whole channel holds the river until the pond reaches its crest, then
+  spills
+- a spilling dam settles to passing all the inflow
+- grains cross a spilling crest
+- sediment settling in a pond lifts its level
+- a narrow slot loses head and carries less of the river (run with `K_OPEN` and without)
+- painted roughness turns the water aside without losing any
+
+Each new check was shown to fail. `nearBed()` returning 1 fails the friction check. The
+spill switched off fails the three dam checks. Friction skipped in `macDrag()` fails the
+roughness check. `K_OPEN = 0` fails the slot check. Diffusion and the opening drag switched
+off fail the inflow-shut check (mean 0.22 after 1200 steps). Sediment left out of the pond's
+level fails the sediment check.
+
+### Not done
+
+- The OpenFOAM comparison has not been re-run against this solver. On 2026-11-13 (drawn
+  rise, one obstacle, 880k cells) the collocated solver had RMS 15% of inflow, bias -1% and
+  correlation 0.51.
+- The dam is a rigid lid with a storage term. The pond's level is one number. The water
+  upstream does not slope toward the crest, and the pond is still until it spills.
+- An obstacle's height is the same for all of them (`WALL_FREEBOARD`). A low sill and a tall
+  dam need a height per object, which the interface does not have.
 
 ## Measurement scripts
 
@@ -181,3 +274,7 @@ faces carry water into solids, the gap passes 11%, over a bed the flow runs away
 and `lib.js` from `sediment-stress-test/repro/verify-river-physics-R3/` next to them, and
 `sync.sh` to build the `stam/` and `mac/` copies. Example:
 `RIVER_HTML=$PWD/mac/index.html node r3_repro.js bed`.
+
+Since stage 2 there is one solver. `sync.sh`, `r3_repro.js` and `r6_steady_compare.js` were
+written for stage 1's two modes and need d48ec45 checked out to run as they were. `timing.js`,
+`r8.js`, `spikes.js` and `longrun.js` run on the current page.

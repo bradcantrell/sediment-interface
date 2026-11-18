@@ -2,9 +2,9 @@
 //
 // index.html is the shared interface: the canvas, the sediment particles, the drawn bed, the
 // obstacles and their timeline, the 3D view, the sidebar. It knows nothing about how water
-// moves. This file is the model that tells it: a real-time 2D flow solver (Jos Stam's stable
-// fluids, adapted) for a channel with an inflow on the left and an open outflow on the right,
-// with the bed, drawn and deposited, acting on the flow as depth.
+// moves. This file is the model that tells it: a real-time 2D depth-averaged flow solver on a
+// staggered (MAC) grid for a channel with an inflow on the left and an open outflow on the
+// right, with the bed, drawn and deposited, acting on the flow as depth.
 //
 // It runs in index.html's scope, after it, and registers itself at the bottom of this file
 // with registerModel(). See MODEL EXTENSION POINT in index.html for what the interface asks
@@ -19,7 +19,6 @@
 // PARAMETERS
 // ─────────────────────────────────────────────
 const VISC = 0.00005;
-const GAUSS_SEIDEL_ITERS = 30;
 // Sediment rules the interface's particle code reads through model.rules.
 const MIN_PARTICLE_AGE = 0.8;
 const MIN_TRAVEL_X = 100;
@@ -30,13 +29,14 @@ let inflowVel = 2.5;
 let settleThresh = 0.20;
 let erosionThresh = 1.0;
 let settleProb = 0.012;
-// Bed friction (1/s). A uniform drag on the solved field: it slows the flow, which raises
-// deposition and lowers erosion through the existing thresholds. At 0 the field is frictionless
-// and the only deposition path is speed < settleThresh, which the field almost never meets.
+// Bed friction (1/s), the slider. A drag on the flow before the pressure solve (macDrag()):
+// the river still carries all its water, but shallow and rough ground turn it aside. It also
+// slows the water nearest the bed, where the grains travel (nearBed()), so more settles and
+// less is lifted.
 let friction = 0.0;
 // Friction zones: a per-cell coefficient ADDED to the global friction, painted with a brush.
-// It damps the solved field locally, so a rough patch slows flow, drops deposition and resists
-// erosion relative to its surroundings.
+// The water goes around a rough patch, and the grains crossing it slow down, so it gathers
+// deposit and resists erosion relative to its surroundings.
 let fricGrid = null, fricDampGrid = null, fricDirty = true;
 let fricUsed = NaN;   // the global friction fricDampGrid was built with
 let fricMode = 0, fricPaint = 1.0, fricRadius = 40;   // 0 = off, 1 = add, 2 = subtract
@@ -105,25 +105,13 @@ function redrawFricBuffer() {
 const BED_SETTLE_ON_BED = 0.25;
 let erosionProb = 0.02;
 
-// Solver work arrays (the fields themselves, u and v, belong to the interface).
-let uPrev, vPrev;
-let p, divArr;
-
 // ─────────────────────────────────────────────
-// FLUID SOLVER (Jos Stam, adapted)
+// FLUID SOLVER
 // ─────────────────────────────────────────────
-function addSource(x, s) {
-  for (let j = 1; j <= NY; j++)
-    for (let i = 1; i <= NX; i++) {
-      let idx = IX(i, j);
-      if (solid[idx]) continue;
-      x[idx] += DT * s[idx];
-    }
-}
-
+// Boundary copy for the cell fields the interface reads (u, v): the inflow and outflow
+// columns copy their neighbour, the banks mirror v (b = 2) so nothing crosses them.
 function setBnd(b, x) {
-  for (let j = 1; j <= NY; j++) { x[IX(0, j)] = x[IX(1, j)]; } // open inflow boundary (copy), not wall mirror
-  for (let j = 1; j <= NY; j++) { x[IX(NX+1, j)] = x[IX(NX, j)]; }
+  for (let j = 1; j <= NY; j++) { x[IX(0, j)] = x[IX(1, j)]; x[IX(NX+1, j)] = x[IX(NX, j)]; }
   for (let i = 1; i <= NX; i++) {
     x[IX(i, 0)] = b === 2 ? -x[IX(i, 1)] : x[IX(i, 1)];
     x[IX(i, NY+1)] = b === 2 ? -x[IX(i, NY)] : x[IX(i, NY)];
@@ -134,72 +122,9 @@ function setBnd(b, x) {
   x[IX(NX+1, NY+1)] = 0.5 * (x[IX(NX, NY+1)] + x[IX(NX+1, NY)]);
 }
 
-function linSolve(b, x, x0, a, c) {
-  for (let iter = 0; iter < GAUSS_SEIDEL_ITERS; iter++) {
-    for (let j = 1; j <= NY; j++) {
-      for (let i = 1; i <= NX; i++) {
-        let idx = IX(i, j);
-        if (solid[idx]) continue;
-        let left = solid[IX(i-1, j)] ? x[idx] : x[IX(i-1, j)];
-        let right = solid[IX(i+1, j)] ? x[idx] : x[IX(i+1, j)];
-        let bottom = solid[IX(i, j-1)] ? x[idx] : x[IX(i, j-1)];
-        let top = solid[IX(i, j+1)] ? x[idx] : x[IX(i, j+1)];
-        x[idx] = (x0[idx] + a * (left + right + bottom + top)) / c;
-      }
-    }
-    setBnd(b, x);
-  }
-}
-
-function diffuse(b, x, x0, diff) { let a = DT * diff * NX * NY; linSolve(b, x, x0, a, 1 + 4 * a); }
-
-function advect(b, d, d0, uVec, vVec) {
-  let dt0 = DT * NX;
-  for (let j = 1; j <= NY; j++) {
-    for (let i = 1; i <= NX; i++) {
-      let idx = IX(i, j);
-      if (solid[idx]) { d[idx] = 0; continue; }
-      let x = i - dt0 * uVec[idx], y = j - dt0 * vVec[idx];
-      x = constrain(x, 0.5, NX + 0.5); y = constrain(y, 0.5, NY + 0.5);
-      let i0 = floor(x), i1 = i0 + 1, j0 = floor(y), j1 = j0 + 1;
-      if (solid[IX(i0, j0)] || solid[IX(i1, j0)] || solid[IX(i0, j1)] || solid[IX(i1, j1)]) { d[idx] = d0[idx]; continue; }
-      let sx = x - i0, sy = y - j0;
-      d[idx] = (1-sx)*(1-sy)*d0[IX(i0,j0)] + sx*(1-sy)*d0[IX(i1,j0)] + (1-sx)*sy*d0[IX(i0,j1)] + sx*sy*d0[IX(i1,j1)];
-    }
-  }
-  setBnd(b, d);
-}
-
-function project(uVec, vVec, pArr, divArr) {
-  for (let j = 1; j <= NY; j++) {
-    for (let i = 1; i <= NX; i++) {
-      let idx = IX(i, j);
-      if (solid[idx]) { divArr[idx] = 0; pArr[idx] = 0; continue; }
-      let uR = solid[IX(i+1, j)] ? 0 : uVec[IX(i+1, j)], uL = solid[IX(i-1, j)] ? 0 : uVec[IX(i-1, j)];
-      let vT = solid[IX(i, j+1)] ? 0 : vVec[IX(i, j+1)], vB = solid[IX(i, j-1)] ? 0 : vVec[IX(i, j-1)];
-      divArr[idx] = -0.5 * (uR - uL + vT - vB); pArr[idx] = 0;
-    }
-  }
-  setBnd(0, divArr); setBnd(0, pArr);
-  linSolve(0, pArr, divArr, 1, 4);
-  for (let j = 1; j <= NY; j++)
-    for (let i = 1; i <= NX; i++) {
-      let idx = IX(i, j);
-      if (solid[idx]) continue;
-      // A wall holds no pressure gradient, so a solid neighbour stands in this cell's own
-      // pressure, as the solve above does (linSolve) and as projectDepth() does. Reading the
-      // solid cell's stored zero instead kicked the flow beside obstacles until it blew up.
-      let R = IX(i+1, j), L = IX(i-1, j), T = IX(i, j+1), B = IX(i, j-1), pc = pArr[idx];
-      uVec[idx] -= 0.5 * ((solid[R] ? pc : pArr[R]) - (solid[L] ? pc : pArr[L]));
-      vVec[idx] -= 0.5 * ((solid[T] ? pc : pArr[T]) - (solid[B] ? pc : pArr[B]));
-    }
-  setBnd(1, uVec); setBnd(2, vVec);
-}
-
 // ── The drawn bed in the flow ──
-// The solver is depth-averaged: with a bed drawn, the projection conserves discharge
-// (div(h u) = 0, h = water depth) instead of plan-view velocity (div(u) = 0). Flow speeds
-// up over shallows and more of it goes through the deep part of a section.
+// The solver is depth-averaged: it conserves discharge (div(h u) = 0, h = water depth), so
+// flow speeds up over shallows and more of it goes through the deep part of a section.
 //
 // Depth is relative, 1 = the full water column, from the same mapping the OpenFOAM export
 // uses (bridge/case_generator.js: a 2.0 m channel, and 160 px of drawn bed is 0.5 m of
@@ -208,15 +133,11 @@ function project(uVec, vVec, pArr, divArr) {
 // same scale (up to DEPO_MAX, another quarter), so the flow responds as sediment builds up:
 // it runs faster over a growing bar, which in turn slows the settling there.
 // The depth is refreshed whenever the bed surface is (every 0.5 s of running, and on edits).
-// With no bed drawn and nothing deposited depthGrid is null and the solver runs the plain
-// projection, unchanged.
+// With no bed drawn and nothing deposited depthGrid is null and every depth is 1.
 const WATER_DEPTH_PX = 640;
 const BED_RELIEF_MAX_PX = 160;
-const DEPTH_SOR = 1.7;                     // over-relaxation for the depth-weighted pressure solve
 let depthGrid = null, depthDirty = true;
-let secA = null, secD = null, secP = null, secC = null;   // per-column work arrays for sectionPressure()
-
-let depthVersion = 0;                      // counts rebuilds, so the MAC solver knows its face depths are stale
+let depthVersion = 0;                      // counts rebuilds, so the solver knows its face depths are stale
 
 function rebuildDepthGrid() {
   depthDirty = false;
@@ -224,7 +145,7 @@ function rebuildDepthGrid() {
   let hasDepo = false;
   if (depoGrid) { for (let k = 0; k < depoGrid.length; k++) { if (depoGrid[k] > 0) { hasDepo = true; break; } } }
   if (bedPoints.length < 2 && !hasDepo) { depthGrid = null; return; }
-  if (!depthGrid) { depthGrid = new Float32Array(SIZE); secA = new Float64Array(NX + 2); secD = new Float64Array(NX + 2); secP = new Float64Array(NX + 2); secC = new Float64Array(NX + 2); }
+  if (!depthGrid) depthGrid = new Float32Array(SIZE);
   let qx = cellW / 4, qy = cellH / 4;
   for (let j = 0; j <= NY + 1; j++) {
     let y = Math.min(NY, Math.max(1, j)) * cellH;          // boundary cells copy their neighbour
@@ -239,108 +160,9 @@ function rebuildDepthGrid() {
   }
 }
 
-// Pressure boundary for the depth-weighted solve: walls and the inflow hold no gradient (the
-// inflow speed is prescribed), and the outflow is open, pressure zero at the outflow face.
-// project() copies at both ends, which leaves nothing able to adjust the outflow when inflow
-// and outflow discharge disagree. It gets away with that because it never converges; a solve
-// that does converge turns the mismatch into a steady false source (discharge rising
-// downstream), which is what happened here with the outflow closed.
-function setBndPressureOpen(x) {
-  for (let j = 1; j <= NY; j++) { x[IX(0, j)] = x[IX(1, j)]; x[IX(NX+1, j)] = -x[IX(NX, j)]; }
-  for (let i = 0; i <= NX + 1; i++) { x[IX(i, 0)] = x[IX(i, 1)]; x[IX(i, NY+1)] = x[IX(i, NY)]; }
-}
-
-// The along-channel part of the pressure, solved exactly: one unknown per column, the
-// equations of projectDepth() summed across each section, a tridiagonal system. A bed asks
-// for a channel-long adjustment (all the flow upstream of a rise has to learn about it), and
-// 30 sweeps from zero only settle short-range imbalances: measured, flow over a full-width
-// rise that should speed up by a third sped up by 1%. This gives the sweeps that long-range
-// answer as their starting point, fresh every call.
-// (Carrying the pressure from the previous frame also converges, and was tried. It kicks the
-// field whenever the flow changes abruptly, by up to ten times the inflow speed for a few
-// frames, because the carried pressure belongs to a flow that is no longer there.)
-function sectionPressure(pArr, divArr) {
-  const H = depthGrid, A = secA, D = secD, P = secP, C = secC;
-  // A[i] couples column i to column i+1; D[i] is the section's summed divergence.
-  for (let i = 1; i <= NX; i++) {
-    let a = 0, d = 0;
-    for (let j = 1; j <= NY; j++) {
-      let idx = IX(i, j);
-      if (solid[idx]) continue;
-      d += divArr[idx];
-      let R = IX(i+1, j);
-      if (i < NX ? !solid[R] : true) a += 0.5 * (H[idx] + H[R]);
-    }
-    A[i] = a; D[i] = d;
-  }
-  // -A[i-1] P[i-1] + (A[i-1] + A[i]) P[i] - A[i] P[i+1] = D[i], with no gradient at the inflow
-  // (A[0] = 0) and P[NX+1] = -P[NX] at the open outflow. Thomas algorithm.
-  A[0] = 0;
-  let prevC = 0, prevP = 0;
-  for (let i = 1; i <= NX; i++) {
-    let lo = A[i-1], up = (i < NX) ? A[i] : 0;
-    let diag = lo + A[i] + (i === NX ? A[i] : 0);
-    let den = diag - lo * prevC;
-    if (den < 1e-9) { C[i] = 0; P[i] = 0; prevC = 0; prevP = 0; continue; }   // a fully blocked section
-    C[i] = up / den;
-    P[i] = (D[i] + lo * prevP) / den;
-    prevC = C[i]; prevP = P[i];
-  }
-  for (let i = NX - 1; i >= 1; i--) P[i] += C[i] * P[i+1];
-  for (let j = 1; j <= NY; j++)
-    for (let i = 1; i <= NX; i++) { let idx = IX(i, j); pArr[idx] = solid[idx] ? 0 : P[i]; }
-}
-
-// project() with depth weights. With every depth equal it solves the same equation as
-// project(), starting from sectionPressure() instead of zero and with an open outflow.
-function projectDepth(uVec, vVec, pArr, divArr) {
-  const H = depthGrid;
-  for (let j = 1; j <= NY; j++) {
-    for (let i = 1; i <= NX; i++) {
-      let idx = IX(i, j);
-      if (solid[idx]) { divArr[idx] = 0; continue; }
-      let R = IX(i+1, j), L = IX(i-1, j), T = IX(i, j+1), B = IX(i, j-1);
-      let qR = solid[R] ? 0 : H[R] * uVec[R], qL = solid[L] ? 0 : H[L] * uVec[L];
-      let qT = solid[T] ? 0 : H[T] * vVec[T], qB = solid[B] ? 0 : H[B] * vVec[B];
-      divArr[idx] = -0.5 * (qR - qL + qT - qB);
-    }
-  }
-  setBnd(0, divArr);
-  sectionPressure(pArr, divArr);
-  setBndPressureOpen(pArr);
-  for (let iter = 0; iter < GAUSS_SEIDEL_ITERS; iter++) {
-    for (let j = 1; j <= NY; j++) {
-      for (let i = 1; i <= NX; i++) {
-        let idx = IX(i, j);
-        if (solid[idx]) continue;
-        let R = IX(i+1, j), L = IX(i-1, j), T = IX(i, j+1), B = IX(i, j-1), hc = H[idx], pc = pArr[idx];
-        // Face depth is the mean of the two cells. A solid neighbour is a wall (no pressure
-        // gradient across it), which linSolve() expresses the same way: it stands in pc.
-        let wR = 0.5 * (hc + H[R]), wL = 0.5 * (hc + H[L]), wT = 0.5 * (hc + H[T]), wB = 0.5 * (hc + H[B]);
-        let gs = (divArr[idx] + wR * (solid[R] ? pc : pArr[R]) + wL * (solid[L] ? pc : pArr[L])
-                              + wT * (solid[T] ? pc : pArr[T]) + wB * (solid[B] ? pc : pArr[B])) / (wR + wL + wT + wB);
-        pArr[idx] = pc + DEPTH_SOR * (gs - pc);
-      }
-    }
-    setBndPressureOpen(pArr);
-  }
-  for (let j = 1; j <= NY; j++)
-    for (let i = 1; i <= NX; i++) {
-      let idx = IX(i, j);
-      if (solid[idx]) continue;
-      // A wall holds no pressure gradient, so a solid neighbour stands in this cell's own
-      // pressure. Reading the solid cell's stored zero instead kicked the flow next to an
-      // obstacle by hundreds of times the inflow speed.
-      let R = IX(i+1, j), L = IX(i-1, j), T = IX(i, j+1), B = IX(i, j-1), pc = pArr[idx];
-      uVec[idx] -= 0.5 * ((solid[R] ? pc : pArr[R]) - (solid[L] ? pc : pArr[L]));
-      vVec[idx] -= 0.5 * ((solid[T] ? pc : pArr[T]) - (solid[B] ? pc : pArr[B]));
-    }
-  setBnd(1, uVec); setBnd(2, vVec);
-}
-
 // Friction: global plus painted zones, precomputed into fricDampGrid (a damping factor per
-// bed cell) when either the global value or a zone changes, so the solvers' inner loops are a
-// lookup rather than an exp() per cell per step. False when there is no friction at all.
+// bed cell, exp(-f DT)) when either the global value or a zone changes, so the solver's inner
+// loop is a lookup rather than an exp() per cell per step. False when there is no friction.
 function updateFricDamp() {
   if (!(friction > 0 || fricGrid)) return false;
   ensureFricGrid();
@@ -359,11 +181,7 @@ function updateFricDamp() {
 }
 
 // ── The staggered (MAC) solver ──
-// The collocated solver above keeps u and v at cell centres and measures divergence across
-// two cells (u[i+1] - u[i-1]). That leaves every other cell free (odd-even decoupling) and
-// lets flow pass through a face that touches a solid cell, so water is made or lost at
-// obstacles (2026-11-17 stress test, items 5, 20, 21). This solver keeps the normal velocity
-// on each face instead (Harlow and Welch's marker-and-cell grid):
+// The normal velocity lives on each face (Harlow and Welch's marker-and-cell grid):
 //
 //   uF[IX(i, j)]  the face between cells (i, j) and (i+1, j), i = 0..NX. Face 0 is the inflow
 //                 edge, face NX the outflow edge.
@@ -372,26 +190,50 @@ function updateFricDamp() {
 //   mac.p         pressure at cell centres.
 //
 // A face is open only if both of its cells are water and that water is connected to the
-// outflow. Closed faces carry nothing. Each step: inflow on face 0, semi-Lagrangian advection
-// of the faces (the backtrace stops at the first solid cell it meets), a small explicit
-// diffusion, then a pressure solve that drives div(h u) to zero in every cell, h being the
-// face depth from depthGrid (1 with no bed). The solve is preconditioned conjugate gradients
-// (see macSolve()) run to a fixed residual, not a fixed number of sweeps, so the answer does
-// not depend, beyond that residual, on where it started. Friction is applied after the solve, as in the old path. The
-// faces are then averaged to cell centres into u and v, which is all the interface sees.
+// outflow. Closed faces carry nothing. Each step:
 //
-// With every cell of a column summed, div(h u) = 0 says the discharge through one column of
-// faces equals the discharge through the next: conservation along the channel is exact to
-// the solver tolerance, with or without obstacles.
+//   1. inflow on face 0;
+//   2. semi-Lagrangian advection of the faces at the particles' speed (MAC_ADV), the
+//      backtrace stopping at the first solid cell it meets;
+//   3. a small explicit diffusion;
+//   4. drag: bed friction (the slider and the painted zones, stronger in shallow water) and
+//      the head loss of a narrow opening;
+//   5. a pressure solve that drives div(h u) to zero in every cell, h being the face depth
+//      from depthGrid (1 with no bed), less what a dammed pond is storing (see below);
+//   6. the faces averaged to cell centres into u and v, which is all the interface sees.
 //
-// solverMode chooses the path; 'stam' runs the collocated solver unchanged. ?solver=mac in
-// the page address turns this one on.
-let solverMode = 'stam';
-try { let q = new URLSearchParams(window.location.search).get('solver'); if (q === 'mac' || q === 'stam') solverMode = q; } catch (e) {}
-
+// The solve is preconditioned conjugate gradients (macSolve()) run to a fixed residual, so the
+// answer does not depend, beyond that residual, on where it started. Summed over a column of
+// cells, div(h u) = 0 says the discharge through one column of faces equals the discharge
+// through the next: conservation along the channel is exact to the solver tolerance, with or
+// without obstacles. The collocated solver this replaced (Stam's stable fluids, until
+// 2026-11-18) measured divergence across two cells and let water through faces that touch a
+// wall; a gap in a wall passed 12-45% of the flow (2026-11-17 stress test, items 5, 20, 21).
+// dev/MAC-GRID.md has the comparison.
 const MAC_TOL = 1e-3;          // largest |div(h u)| left in any cell, index units (a face at inflow speed carries ~2.5)
 const MAC_MAX_ITERS = 400;     // a cap, not the stopping rule; macStats.iters says how many were used
 const MAC_MIC_TAU = 0.97, MAC_MIC_SIGMA = 0.25;   // modified incomplete Cholesky, as in Bridson's Fluid Simulation for Computer Graphics
+// Advection moves the field as far per step as a particle moves: the interface steps a grain
+// by vx * DT * 4 px with vx = u * cellW, so u * 4 * DT cells. (The collocated solver used
+// DT * NX, 12.8 cells per unit speed, 40 times as far, which copied a jet far downstream.)
+const MAC_ADV = 4 * DT;
+// Head loss in a narrow opening. Wall friction and the loss where a flow is squeezed act as a
+// drag du/dt = -K_OPEN |u| u / b, b the opening's width across the flow in cells (solid to
+// solid, or solid to bank). K_OPEN = 0.25 loses about half the velocity head over each width
+// of an opening, an entrance loss of K = 0.5 as in a sharp-edged contraction. In the open
+// channel (b = NY) it is a side-wall drag of about 0.2% per step, which the solve gives back.
+// (A let, so a check can switch it off and see what it does.)
+let K_OPEN = 0.25;
+// Overtopping. In this rigid-lid model water cannot pile up, except behind an obstacle that
+// blocks the whole channel: there the inflow is stored as a pond whose level rises. Walls
+// stand WALL_FREEBOARD above the river's surface (0.25 of the depth, 0.5 m in the 2 m channel,
+// the most bed the editor draws). Sediment settling in the pond takes up room too and lifts
+// the water the same way. Once the level passes the crest the wall spills, as a broad-crested
+// weir, q = WEIR_C * H^1.5 per unit width, H the level above the crest. WEIR_C is the textbook
+// 1.705 m^0.5/s, in this model's units (depth 1 = 2 m, speeds in m/s, as the OpenFOAM export
+// reads them): 1.705 * 2^1.5 / 2 = 2.41. The wall's cells then carry water H deep.
+const WALL_FREEBOARD = 0.25;
+const WEIR_C = 2.41;
 let mac = null;
 let macStats = { iters: 0, residual: 0, active: 0 };
 
@@ -403,51 +245,127 @@ function macAlloc() {
     active: new Uint8Array(SIZE), cells: new Int32Array(NX * NY), nCells: 0,
     Adiag: f64(), Ax: f64(), Ay: f64(), precon: f64(), Lx: f64(), Ly: f64(), colOf: new Int32Array(NX * NY),
     p: f64(), r: f64(), z: f64(), s: f64(), q: f64(),
-    dist: new Float32Array(SIZE),
+    dist: new Float32Array(SIZE), bU: new Float32Array(SIZE), bV: new Float32Array(SIZE),
     colD: new Float64Array(NX + 2), colO: new Float64Array(NX + 2), colR: new Float64Array(NX + 2),
     colC: new Float64Array(NX + 2), colX: new Float64Array(NX + 2),
     solidSeen: new Uint8Array(SIZE), depthSeen: -1, built: false,
     uLast: new Float32Array(SIZE), vLast: new Float32Array(SIZE),
+    // The pond behind a full blockage (see macPond()).
+    pond: new Uint8Array(SIZE), crest: new Uint8Array(SIZE), pondCells: new Int32Array(NX * NY),
+    nPond: 0, weirWidth: 0, h0: new Float32Array(SIZE),
+    store: 0, level: 0, head: 0, headBuilt: 0, spilling: false, qIn: 0, qSpill: 0,
   };
 }
 
-// The faces, the connected water, the face depths, the pressure matrix and its
-// preconditioner, and the distance to the nearest solid cell. Rebuilt only when the solid
-// mask or the depth grid changes.
-function macRebuild() {
-  const M = mac, H = depthGrid, W = NX + 2;
-  M.solidSeen.set(solid); M.depthSeen = depthVersion; M.built = true;
-  const { openU, openV, hU, hV, active } = M;
-  openU.fill(0); openV.fill(0); active.fill(0);
-  // Water connected to the outflow, found by a flood fill from the last column. Water cut off
-  // from it (a pond inside an obstacle, everything above a wall across the whole channel)
-  // has nowhere to send the inflow; its faces are closed and it stands still.
-  const stack = [];
-  for (let j = 1; j <= NY; j++) { let c = IX(NX, j); if (!solid[c]) { active[c] = 1; stack.push(c); } }
+function macWet(c) { return !solid[c] || (mac.spilling && mac.crest[c]); }
+
+// The pond: water reached from the inflow but not connected to the outflow through water,
+// and the crest: the solid cells of every obstacle that touches it. Found when the mask
+// changes. weirWidth is the number of faces between the pond and its crest (the crest's
+// length, in cells). The stored volume is kept while a pond stays; it goes when the
+// blockage does.
+function macPond() {
+  const M = mac, W = NX + 2, { pond, crest } = M;
+  const reach = new Uint8Array(SIZE), out = new Uint8Array(SIZE), stack = [];
+  const fill = (seen, seed) => {
+    for (const c of seed) if (!solid[c] && !seen[c]) { seen[c] = 1; stack.push(c); }
+    while (stack.length) {
+      let c = stack.pop(), i = c % W, j = (c - i) / W;
+      if (i > 1 && !solid[c-1] && !seen[c-1]) { seen[c-1] = 1; stack.push(c-1); }
+      if (i < NX && !solid[c+1] && !seen[c+1]) { seen[c+1] = 1; stack.push(c+1); }
+      if (j > 1 && !solid[c-W] && !seen[c-W]) { seen[c-W] = 1; stack.push(c-W); }
+      if (j < NY && !solid[c+W] && !seen[c+W]) { seen[c+W] = 1; stack.push(c+W); }
+    }
+  };
+  const left = [], right = [];
+  for (let j = 1; j <= NY; j++) { left.push(IX(1, j)); right.push(IX(NX, j)); }
+  fill(reach, left); fill(out, right);
+  pond.fill(0); crest.fill(0);
+  let n = 0;
+  for (let j = 1; j <= NY; j++) for (let i = 1; i <= NX; i++) { let c = IX(i, j); if (reach[c] && !out[c]) { pond[c] = 1; M.pondCells[n++] = c; } }
+  const had = M.nPond > 0;
+  M.nPond = n; M.weirWidth = 0;
+  if (!n) { M.store = 0; M.level = 0; M.head = 0; M.spilling = false; return; }
+  // The crest: solid cells joined to the pond, through solid cells.
+  for (let k = 0; k < n; k++) {
+    let c = M.pondCells[k];
+    for (const d of [c-1, c+1, c-W, c+W]) {
+      let i = d % W, j = (d - i) / W;
+      if (i < 1 || i > NX || j < 1 || j > NY || !solid[d]) continue;
+      M.weirWidth++;
+      if (!crest[d]) { crest[d] = 1; stack.push(d); }
+    }
+  }
   while (stack.length) {
     let c = stack.pop(), i = c % W, j = (c - i) / W;
-    if (i > 1 && !solid[c-1] && !active[c-1]) { active[c-1] = 1; stack.push(c-1); }
-    if (i < NX && !solid[c+1] && !active[c+1]) { active[c+1] = 1; stack.push(c+1); }
-    if (j > 1 && !solid[c-W] && !active[c-W]) { active[c-W] = 1; stack.push(c-W); }
-    if (j < NY && !solid[c+W] && !active[c+W]) { active[c+W] = 1; stack.push(c+W); }
+    for (const [d, ok] of [[c-1, i > 1], [c+1, i < NX], [c-W, j > 1], [c+W, j < NY]])
+      if (ok && solid[d] && !crest[d]) { crest[d] = 1; stack.push(d); }
+  }
+  // The bed as it was when the pond formed: sediment settling after that lifts the level.
+  if (!had) {
+    M.store = 0;
+    for (let k = 0; k < n; k++) { let c = M.pondCells[k]; M.h0[c] = depthGrid ? depthGrid[c] : 1; }
+  }
+}
+
+// The pond's level, from the inflow stored this step and the sediment settled in it, and the
+// head over the crest that sets the spill. Run each step while there is a pond.
+function macPondStep(qIn) {
+  const M = mac, n = M.nPond;
+  let sed = 0;
+  for (let k = 0; k < n; k++) { let c = M.pondCells[k]; sed += M.h0[c] - (depthGrid ? depthGrid[c] : 1); }
+  M.qIn = qIn;
+  M.qSpill = M.head > 0 ? WEIR_C * M.weirWidth * Math.pow(M.head, 1.5) : 0;
+  M.store = Math.max(0, M.store + (qIn - M.qSpill) * MAC_ADV);
+  M.level = (M.store + Math.max(0, sed)) / n;
+  M.head = Math.max(0, M.level - WALL_FREEBOARD);
+  if (M.head > 1e-4 && M.weirWidth > 0) {
+    if (!M.spilling) { M.spilling = true; M.headBuilt = 0; }
+  } else if (M.spilling) { M.spilling = false; M.headBuilt = 0; }
+}
+
+// The faces, the connected water, the face depths, the pressure matrix and its
+// preconditioner, the distance to the nearest solid cell and the width of the opening at
+// each face. Rebuilt when the solid mask or the depth grid changes, and while a dam spills
+// whenever the depth over its crest has moved by more than 2%.
+function macRebuild() {
+  const M = mac, H = depthGrid, W = NX + 2;
+  M.depthSeen = depthVersion; M.built = true; M.headBuilt = M.spilling ? M.head : 0;
+  const { openU, openV, hU, hV, active } = M;
+  const crestH = M.spilling ? Math.min(1, M.head) : 0;
+  const hCell = (c) => (solid[c] ? crestH : (H ? H[c] : 1));
+  // Face depth: the mean of its two cells, or over a crest the depth on the crest (the
+  // control of a weir is the water on its crest, not the pond behind it).
+  const hFace = (a, b) => (solid[a] || solid[b]) ? Math.min(hCell(a), hCell(b)) : 0.5 * (hCell(a) + hCell(b));
+  openU.fill(0); openV.fill(0); active.fill(0);
+  // Water connected to the outflow, found by a flood fill from the last column. Water cut off
+  // from it (a pond inside an obstacle, or a dam's pond until it spills) stands still.
+  const stack = [];
+  for (let j = 1; j <= NY; j++) { let c = IX(NX, j); if (macWet(c)) { active[c] = 1; stack.push(c); } }
+  while (stack.length) {
+    let c = stack.pop(), i = c % W, j = (c - i) / W;
+    if (i > 1 && macWet(c-1) && !active[c-1]) { active[c-1] = 1; stack.push(c-1); }
+    if (i < NX && macWet(c+1) && !active[c+1]) { active[c+1] = 1; stack.push(c+1); }
+    if (j > 1 && macWet(c-W) && !active[c-W]) { active[c-W] = 1; stack.push(c-W); }
+    if (j < NY && macWet(c+W) && !active[c+W]) { active[c+W] = 1; stack.push(c+W); }
   }
   for (let j = 1; j <= NY; j++) {
     for (let i = 0; i <= NX; i++) {
       let c = IX(i, j);
       openU[c] = (i === 0) ? active[c+1] : (i === NX ? active[c] : (active[c] && active[c+1] ? 1 : 0));
-      hU[c] = H ? 0.5 * (H[c] + H[c+1]) : 1;
+      hU[c] = i === 0 ? hCell(c+1) : (i === NX ? hCell(c) : hFace(c, c+1));
     }
   }
   for (let j = 1; j < NY; j++) {
     for (let i = 1; i <= NX; i++) {
       let c = IX(i, j);
       openV[c] = active[c] && active[c+W] ? 1 : 0;
-      hV[c] = H ? 0.5 * (H[c] + H[c+W]) : 1;
+      hV[c] = hFace(c, c+W);
     }
   }
   // A p = -div: for each cell, the sum over its open faces of h_f (p_c - p_neighbour). The
   // inflow face has its speed given, so it holds no pressure; the outflow face sees p = 0 one
-  // half cell out (the ghost is -p_c, as setBndPressureOpen() does), so it counts twice.
+  // half cell out (the ghost is -p_c), so it counts twice.
   const { Adiag, Ax, Ay, precon, cells } = M;
   Adiag.fill(0); Ax.fill(0); Ay.fill(0); precon.fill(0); M.Lx.fill(0); M.Ly.fill(0);
   let n = 0;
@@ -483,10 +401,11 @@ function macRebuild() {
     M.colD[i] += Adiag[c] + 2 * Ay[c];
     M.colO[i] += Ax[c];
   }
-  // Chebyshev distance, in cells, from each cell to the nearest solid cell (capped), two
-  // chamfer passes. The advection backtrace uses it to take long steps through open water.
+  // Chebyshev distance, in cells, from each cell to the nearest cell that blocks the flow
+  // (capped), two chamfer passes. The advection backtrace uses it to take long steps through
+  // open water. A spilling crest does not block.
   const D = M.dist, CAP = 1e4;
-  for (let c = 0; c < SIZE; c++) D[c] = solid[c] ? 0 : CAP;
+  for (let c = 0; c < SIZE; c++) D[c] = macWet(c) ? CAP : 0;
   for (let j = 1; j <= NY; j++)
     for (let i = 1; i <= NX; i++) {
       let c = IX(i, j);
@@ -499,6 +418,36 @@ function macRebuild() {
       if (!D[c]) continue;
       D[c] = Math.min(D[c], D[c+1] + 1, D[c+W] + 1, D[c+W+1] + 1, D[c+W-1] + 1);
     }
+  // The width of the opening across the flow at each face, in cells: for a u face the run of
+  // water down its column (the smaller of its two cells' runs), for a v face the run along
+  // its row. The banks bound a run as a solid does.
+  const run = M.r;   // free outside macSolve()
+  for (let i = 1; i <= NX; i++) {
+    let j = 1;
+    while (j <= NY) {
+      if (!macWet(IX(i, j))) { run[IX(i, j)] = 0; j++; continue; }
+      let j1 = j; while (j1 + 1 <= NY && macWet(IX(i, j1 + 1))) j1++;
+      for (let q = j; q <= j1; q++) run[IX(i, q)] = j1 - j + 1;
+      j = j1 + 1;
+    }
+  }
+  for (let j = 1; j <= NY; j++)
+    for (let i = 0; i <= NX; i++) {
+      let c = IX(i, j);
+      M.bU[c] = i === 0 ? run[c+1] : (i === NX ? run[c] : Math.min(run[c], run[c+1]));
+    }
+  for (let j = 1; j <= NY; j++) {
+    let i = 1;
+    while (i <= NX) {
+      if (!macWet(IX(i, j))) { run[IX(i, j)] = 0; i++; continue; }
+      let i1 = i; while (i1 + 1 <= NX && macWet(IX(i1 + 1, j))) i1++;
+      for (let q = i; q <= i1; q++) run[IX(q, j)] = i1 - i + 1;
+      i = i1 + 1;
+    }
+  }
+  for (let j = 1; j < NY; j++)
+    for (let i = 1; i <= NX; i++) { let c = IX(i, j); M.bV[c] = Math.min(run[c], run[c+W]); }
+  M.r.fill(0);
 }
 
 // Bilinear samples of the face fields at a point in cell-index coordinates (cell (i, j) has
@@ -517,9 +466,8 @@ function macSampleV(F, x, y) {
 }
 
 // Where the water now at (x, y) came from, moving back by (dx, dy). The path is walked in
-// steps no longer than the distance to the nearest solid cell allows, and stops at the last
-// point before a solid cell, so a backtrace never jumps a wall. (The old advect() checked
-// only the corners at the far end of a jump of up to 12.8 cells per unit speed.)
+// steps no longer than the distance to the nearest blocking cell allows, and stops at the
+// last point before one, so a backtrace never jumps a wall.
 const macTrace = { x: 0, y: 0 };
 function macBacktrace(x, y, dx, dy) {
   const D = mac.dist, L = Math.max(Math.abs(dx), Math.abs(dy));
@@ -538,11 +486,11 @@ function macBacktrace(x, y, dx, dy) {
       // Leaving the domain: stop at its edge (the inflow, the outflow or a bank).
       nx = Math.min(NX + 0.5, Math.max(0.5, nx)); ny = Math.min(NY + 0.5, Math.max(0.5, ny));
       let ni = Math.min(NX, Math.max(1, Math.floor(nx + 0.5))), nj = Math.min(NY, Math.max(1, Math.floor(ny + 0.5)));
-      if (!solid[IX(ni, nj)]) { x = nx; y = ny; }
+      if (D[IX(ni, nj)] > 0) { x = nx; y = ny; }
       break;
     }
     let ni = Math.floor(nx + 0.5), nj = Math.floor(ny + 0.5);
-    if (solid[IX(ni, nj)]) break;
+    if (D[IX(ni, nj)] === 0) break;
     x = nx; y = ny; t += f;
   }
   macTrace.x = x; macTrace.y = y;
@@ -551,17 +499,15 @@ function macBacktrace(x, y, dx, dy) {
 
 // Conjugate gradients on A p = b over the connected water, preconditioned with MIC(0),
 // started from the last step's pressure, stopped when no cell is left with more than MAC_TOL.
-// Because it is run to a residual, carrying the pressure over only saves iterations; the
-// result is the same field (the collocated solver could not do that: see sectionPressure()).
+// Because it is run to a residual, carrying the pressure over only saves iterations.
 function macSolve(b) {
   const M = mac, { Adiag, Ax, Ay, Lx, Ly, precon, cells, colOf, p, r, z, s, q } = M, n = M.nCells, W = NX + 2;
   const { colD, colO, colR, colC, colX } = M;
   // MIC(0) alone handles short-range error well and the channel-long part badly: the
   // pressure that tells water upstream about an obstacle took 60 of 85 iterations. So the
-  // preconditioner also solves the column-sum system exactly (one unknown per column, as
-  // sectionPressure() does for the old path) and adds that correction, uniform down each
-  // column (an additive two-level preconditioner; still symmetric, so CG holds). Returns
-  // r . z, which CG needs next.
+  // preconditioner also solves the column-sum system exactly (one unknown per column) and
+  // adds that correction, uniform down each column (an additive two-level preconditioner;
+  // still symmetric, so CG holds). Returns r . z, which CG needs next.
   const applyPrecon = (rr, out) => {
     colR.fill(0);
     for (let k = 0; k < n; k++) colR[colOf[k]] += rr[cells[k]];
@@ -587,7 +533,8 @@ function macSolve(b) {
     return dot;
   };
   // Inactive cells hold zero in every vector, so the stencils can read them freely.
-  z.fill(0); s.fill(0); q.fill(0);
+  z.fill(0); s.fill(0); q.fill(0); r.fill(0);
+  for (let c = 0; c < SIZE; c++) if (!M.active[c]) p[c] = 0;
   let rmax = 0, bmax = 0;
   for (let k = 0; k < n; k++) {
     let c = cells[k];
@@ -625,16 +572,66 @@ function macSolve(b) {
   macStats.iters = it; macStats.residual = rmax; macStats.active = n;
 }
 
-function macStep() {
+// Drag before the solve, so it shapes the flow rather than taking water out of it. Bed
+// friction is the slider plus the painted zones, f, as a decay exp(-f DT / h) per step:
+// bed shear spread over the water column, so shallow water feels it more (h = 1 is the full
+// depth, where it is exp(-f DT) as before). With a fixed inflow the discharge stays; what
+// friction changes is where the water goes, around a painted patch and away from shallows
+// into the deep channel. (Applied after the solve, as before 2026-11-18, it drained a little
+// water out of every painted cell each step.) What it does to sediment is in nearBed().
+// Then the head loss of a narrow opening (K_OPEN), implicit so it cannot reverse a face.
+function macDrag() {
+  const M = mac, W = NX + 2, { uF, vF, openU, openV, hU, hV, bU, bV } = M;
+  const fric = updateFricDamp();
+  for (let j = 1; j <= NY; j++) {
+    let gj = Math.min(GH - 1, Math.floor(j * cellH / DEPO_CELL));
+    for (let i = 1; i <= NX; i++) {
+      let c = IX(i, j);
+      if (!openU[c]) continue;
+      let x = uF[c];
+      if (fric) {
+        let gi = Math.min(GW - 1, Math.floor((i + 0.5) * cellW / DEPO_CELL));
+        let d = fricDampGrid[gj * GW + gi], h = hU[c];
+        if (d !== 1) x *= (h === 1 ? d : Math.pow(d, 1 / Math.max(h, 0.05)));
+      }
+      uF[c] = x / (1 + K_OPEN * Math.abs(x) * MAC_ADV / Math.max(1, bU[c]));
+    }
+  }
+  for (let j = 1; j < NY; j++) {
+    let gj = Math.min(GH - 1, Math.floor((j + 0.5) * cellH / DEPO_CELL));
+    for (let i = 1; i <= NX; i++) {
+      let c = IX(i, j);
+      if (!openV[c]) continue;
+      let x = vF[c];
+      if (fric) {
+        let gi = Math.min(GW - 1, Math.floor(i * cellW / DEPO_CELL));
+        let d = fricDampGrid[gj * GW + gi], h = hV[c];
+        if (d !== 1) x *= (h === 1 ? d : Math.pow(d, 1 / Math.max(h, 0.05)));
+      }
+      vF[c] = x / (1 + K_OPEN * Math.abs(x) * MAC_ADV / Math.max(1, bV[c]));
+    }
+  }
+}
+
+function velocityStep() {
+  if (depthDirty) rebuildDepthGrid();
   if (!mac) macAlloc();
   const M = mac, W = NX + 2;
-  let { uF, vF, uN, vN } = M;
-  const { openU, openV, hU, hV } = M;
-  let rebuilt = false;
+  const { uF, vF, uN, vN } = M;
   // The mask (an object placed, moved, timed in or out) or the depth changed.
-  if (!M.built || M.depthSeen !== depthVersion) rebuilt = true;
-  else for (let c = 0; c < SIZE; c++) if (solid[c] !== M.solidSeen[c]) { rebuilt = true; break; }
+  let maskChanged = !M.built;
+  if (!maskChanged) for (let c = 0; c < SIZE; c++) if (solid[c] !== M.solidSeen[c]) { maskChanged = true; break; }
+  if (maskChanged) { M.solidSeen.set(solid); macPond(); }
+  // A pond fills with the inflow it holds back.
+  if (M.nPond) {
+    let qIn = 0;
+    for (let j = 1; j <= NY; j++) { let c = IX(1, j); if (M.pond[c]) qIn += inflowVel * (depthGrid ? depthGrid[c] : 1); }
+    macPondStep(qIn);
+  }
+  let rebuilt = maskChanged || M.depthSeen !== depthVersion
+             || (M.spilling ? Math.abs(M.head - M.headBuilt) > 0.02 * M.head : M.headBuilt !== 0);
   if (rebuilt) macRebuild();
+  const { openU, openV, hU, hV } = M;
   // The interface owns u and v. If anything other than this solver wrote them since the last
   // step (R, a restart after a non-finite flow, a check setting a field), the faces are taken
   // from what is there now, each the mean of its two cells.
@@ -649,16 +646,13 @@ function macStep() {
   }
 
   // Advection: each open face takes the value found where its water was one step ago.
-  // dt0 is the old solver's scale (12.8 cells per unit speed per step), kept so the flow
-  // moves as it did.
-  const dt0 = DT * NX;
   for (let j = 1; j <= NY; j++) {
     for (let i = 1; i <= NX; i++) {
       let c = IX(i, j);
       if (!openU[c]) { uN[c] = 0; continue; }
       let ip = Math.min(i + 1, NX);
       let vc = 0.25 * (vF[c-W] + vF[c] + vF[IX(ip, j-1)] + vF[IX(ip, j)]);
-      let b = macBacktrace(i + 0.5, j, -dt0 * uF[c], -dt0 * vc);
+      let b = macBacktrace(i + 0.5, j, -MAC_ADV * uF[c], -MAC_ADV * vc);
       uN[c] = macSampleU(uF, b.x, b.y);
     }
   }
@@ -667,18 +661,18 @@ function macStep() {
       let c = IX(i, j);
       if (!openV[c]) { vN[c] = 0; continue; }
       let uc = 0.25 * (uF[c-1] + uF[c] + uF[c-1+W] + uF[c+W]);
-      let b = macBacktrace(i, j + 0.5, -dt0 * uc, -dt0 * vF[c]);
+      let b = macBacktrace(i, j + 0.5, -MAC_ADV * uc, -MAC_ADV * vF[c]);
       vN[c] = macSampleV(vF, b.x, b.y);
     }
   }
-  // Inflow: the same speed and noise as the old path, on the inflow faces.
+  // Inflow: the set speed with a little noise along the edge, on the inflow faces.
   for (let j = 1; j <= NY; j++) {
     let c = IX(0, j);
     uN[c] = openU[c] ? inflowVel + (noise(j * 0.15, simTime * 0.3) - 0.5) * 0.3 : 0;
   }
-  // Diffusion, one explicit step with the old path's coefficient (DT * VISC * NX * NY, about
-  // 0.06, well inside the explicit limit of 0.25). A closed neighbour stands in the face's own
-  // value, so walls are free-slip, as in linSolve().
+  // Diffusion, one explicit step (DT * VISC * NX * NY, about 0.06, well inside the explicit
+  // limit of 0.25). A closed neighbour stands in the face's own value, so walls are free-slip;
+  // their drag is K_OPEN's.
   const a = DT * VISC * NX * NY;
   for (let j = 1; j <= NY; j++) {
     for (let i = 1; i <= NX; i++) {
@@ -702,12 +696,17 @@ function macStep() {
     }
   }
 
-  // Projection: div(h u) of each connected cell, solved away.
+  macDrag();
+
+  // Projection: div(h u) of each connected cell, solved away. A spilling pond keeps what it
+  // stores (inflow less spill), spread over its cells, so only the spill goes on downstream.
   const b = M.uN;   // free again: reused for the right-hand side
   b.fill(0);
+  const sink = (M.spilling && M.nPond) ? (M.qIn - M.qSpill) / M.nPond : 0;
   for (let k = 0; k < M.nCells; k++) {
     let c = M.cells[k];
     b[c] = -(hU[c] * uF[c] - hU[c-1] * uF[c-1] + hV[c] * vF[c] - hV[c-W] * vF[c-W]);
+    if (sink && M.pond[c]) b[c] -= sink;
   }
   macSolve(b);
   const P = M.p;
@@ -718,74 +717,30 @@ function macStep() {
   for (let j = 1; j < NY; j++)
     for (let i = 1; i <= NX; i++) { let c = IX(i, j); if (openV[c]) vF[c] -= P[c+W] - P[c]; }
 
-  // Friction on the solved faces, as the old path applies it to the solved cells. The inflow
-  // face is the boundary condition and is left alone.
-  if (updateFricDamp()) {
-    for (let j = 1; j <= NY; j++) {
-      let gj = Math.min(GH - 1, Math.floor(j * cellH / DEPO_CELL));
-      for (let i = 1; i <= NX; i++) {
-        let c = IX(i, j);
-        if (!openU[c]) continue;
-        let gi = Math.min(GW - 1, Math.floor((i + 0.5) * cellW / DEPO_CELL));
-        uF[c] *= fricDampGrid[gj * GW + gi];
-      }
-    }
-    for (let j = 1; j < NY; j++) {
-      let gj = Math.min(GH - 1, Math.floor((j + 0.5) * cellH / DEPO_CELL));
-      for (let i = 1; i <= NX; i++) {
-        let c = IX(i, j);
-        if (!openV[c]) continue;
-        let gi = Math.min(GW - 1, Math.floor(i * cellW / DEPO_CELL));
-        vF[c] *= fricDampGrid[gj * GW + gi];
-      }
-    }
-  }
-
-  // To the interface: each cell the mean of its two faces in each direction.
+  // To the interface: each cell the mean of its two faces in each direction. A spilling crest
+  // carries water, so its cells get a speed too (see model.passable).
   for (let j = 1; j <= NY; j++)
     for (let i = 1; i <= NX; i++) {
       let c = IX(i, j);
-      if (solid[c]) { u[c] = 0; v[c] = 0; continue; }
+      if (!macWet(c)) { u[c] = 0; v[c] = 0; continue; }
       u[c] = 0.5 * (uF[c-1] + uF[c]);
       v[c] = 0.5 * (vF[c-W] + vF[c]);
     }
   setBnd(1, u); setBnd(2, v);
   M.uLast.set(u); M.vLast.set(v);
-  for (let k = 0; k < M.nCells; k++) { let c = M.cells[k]; p[c] = P[c]; }
 }
 
-function velocityStep() {
-  if (depthDirty) rebuildDepthGrid();
-  if (solverMode === 'mac') { macStep(); return; }
-  const bed = !!depthGrid;
-  // Dirichlet inflow
-  for (let j = 1; j <= NY; j++) {
-    let idx = IX(1, j);
-    if (!solid[idx]) {
-      let noiseVal = (noise(j * 0.15, simTime * 0.3) - 0.5) * 0.3;
-      u[idx] = inflowVel + noiseVal;
-    }
-  }
-  diffuse(1, uPrev, u, VISC);
-  if (bed) projectDepth(uPrev, vPrev, p, divArr); else project(uPrev, vPrev, p, divArr);
-  advect(1, u, uPrev, uPrev, vPrev);
-  advect(2, v, vPrev, uPrev, vPrev);
-  if (bed) projectDepth(u, v, p, divArr); else project(u, v, p, divArr);
-
-  // Bed friction: exponential drag per step. With none, the field keeps near-inflow speed
-  // everywhere, particles never drop below settleThresh, and almost nothing deposits.
-  // Friction: global plus painted zones, applied per cell to the solved field (see
-  // updateFricDamp()).
-  if (updateFricDamp()) {
-    for (let j = 1; j <= NY; j++) {
-      let gj = Math.min(GH - 1, Math.floor(j * cellH / DEPO_CELL));
-      for (let i = 1; i <= NX; i++) {
-        let gi = Math.min(GW - 1, Math.floor(i * cellW / DEPO_CELL));
-        let d0 = fricDampGrid[gj * GW + gi];
-        if (d0 !== 1) { let q = IX(i, j); u[q] *= d0; v[q] *= d0; }
-      }
-    }
-  }
+// What the slider does to sediment. In a real river a rougher bed, carrying the same
+// discharge, runs deeper and slower: by Manning's equation the depth goes as n^0.6 and the
+// speed as n^-0.6. This rigid-lid model cannot deepen, so the slowing is given to the rules
+// that decide settling and lifting: they compare the speed times (1 + f)^-0.6 with their
+// thresholds, f the friction there (the slider plus any painted zone), read as Manning's n
+// raised by the factor 1 + f (friction 1 doubles it). The grains still move with the
+// depth-mean flow, so the supply coming down the reach stays the same. (Slowing the grains
+// themselves was tried: fewer arrived, and the deposit fell as friction rose.)
+function nearBed(x, y) {
+  let f = friction + frictionAt(x, y);
+  return f > 0 ? Math.pow(1 + f, -0.6) : 1;
 }
 
 // ─────────────────────────────────────────────
@@ -831,14 +786,15 @@ registerModel({
       `<p>This model is a stretch of river seen from above. Water comes in at the left edge and leaves at the right, and the top and bottom edges hold it in like banks.</p>
        <p>Use it to ask what a change in the channel does downstream. A bar that forms below a bridge pier, a pool that scours where the flow is pinched, sediment that drops out in the slack water behind a planted island.</p>` },
     { id: 'river-objects', after: 'draw', target: guideCanvas, title: 'What an object does', text:
-      `<p>Then watch. Sediment usually piles up in the slow water behind an object and gets scoured away beside it, where the water squeezes past.</p>` },
+      `<p>Then watch. Sediment usually piles up in the slow water behind an object and gets scoured away beside it, where the water squeezes past.</p>
+       <p>A wall across the whole river is a dam. The water backs up behind it until the pond reaches the top of the wall, and then it spills over and carries sediment with it. Sand settling in the pond raises its floor, so it fills and spills sooner.</p>` },
     { id: 'river-physics', after: 'thumb', target: guideSection('reset-physics', 'erosion-prob'), title: 'Physics', text:
-      `<p>These change how the river behaves. <b>inflow</b> is how fast the water comes in. Faster water carries sediment further and scours harder. <b>friction</b> is the drag of the riverbed on all of the water. More friction slows the water everywhere, so more settles and less is lifted.</p>
+      `<p>These change how the river behaves. <b>inflow</b> is how fast the water comes in. Faster water carries sediment farther and scours harder. <b>friction</b> is how rough the riverbed is. Rough ground slows the water near the bed, so more settles and less is lifted. The river still carries all of its water, but less of it runs over rough or shallow ground.</p>
        <p><b>settle thresh</b> is the speed below which a grain can settle, and <b>settle prob</b> is how likely it is to settle each moment once it is that slow. <b>erode thresh</b> is the speed above which the water can lift a deposit again, and <b>erode prob</b> is how likely that is. Together they decide where the ground builds and where it wears.</p>
        <p><b>zone μ</b> and <b>brush r</b> belong to the friction brush, which comes after the toggles. <b>reset</b> puts all of these back.</p>` },
     { id: 'river-fric', after: 'toggles', target: '#toggle-fric', title: 'Painting roughness', text:
       `<p><b>fric</b> lets you paint rough ground onto the site, like a reed bed, a planted bank or a stretch of riprap. Click it once for <b>fric+</b> and drag on the site to paint roughness on. Click again for <b>fric-</b> to rub it off, and once more to stop painting.</p>
-       <p>Rough ground slows the water passing over it, so sediment settles there and the ground resists scour. In the physics section, <b>zone μ</b> sets how rough the paint is and <b>brush r</b> sets the size of the brush.</p>` },
+       <p>Water goes around rough ground, and what does cross it slows near the bed, so sediment settles there and the ground resists scour. In the physics section, <b>zone μ</b> sets how rough the paint is and <b>brush r</b> sets the size of the brush.</p>` },
   ],
 
   controls: {
@@ -886,18 +842,20 @@ registerModel({
     },
   },
 
-  init() {
-    uPrev = new Float32Array(SIZE); vPrev = new Float32Array(SIZE);
-    p = new Float32Array(SIZE); divArr = new Float32Array(SIZE);
-  },
+  init() { macAlloc(); },
 
   step() { velocityStep(); },
 
   // R, or the interface found the flow non-finite: start the solver from rest.
   restart() {
-    uPrev.fill(0); vPrev.fill(0); p.fill(0); divArr.fill(0);
-    if (mac) { mac.uF.fill(0); mac.vF.fill(0); mac.p.fill(0); }
+    if (!mac) return;
+    mac.uF.fill(0); mac.vF.fill(0); mac.p.fill(0);
+    mac.store = 0; mac.level = 0; mac.head = 0; mac.spilling = false;
   },
+
+  // Flow cells an obstacle holds but water crosses: the crest of a spilling dam. The interface
+  // lets grains through them and reads their speed. Null when nothing spills.
+  get passable() { return mac && mac.spilling ? mac.crest : null; },
 
   // The drawn bed or the deposit changed: the flow depth has to be rebuilt.
   bedChanged() { depthDirty = true; },
@@ -927,6 +885,7 @@ registerModel({
     get erosionProb() { return erosionProb; },
     minTravelX: MIN_TRAVEL_X, minAge: MIN_PARTICLE_AGE, maxAge: MAX_PARTICLE_AGE,
     bedSettleOnBed: BED_SETTLE_ON_BED,
+    nearBed,
   },
   spawnParticle, respawnParticle,
 
