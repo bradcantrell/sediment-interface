@@ -243,9 +243,9 @@ by a check. Do not undo them.
   rebuilt from them, so zeroing `u` and `v` puts the water at rest.
 - Deposit is averaged over the flow cell before it becomes depth.
 
-Against OpenFOAM on a drawn rise with one obstacle (880k cells, 2026-11-13), the collocated
-solver had an RMS difference of 15% of inflow, bias -1% and correlation 0.51. That comparison
-has not been re-run for this solver.
+Against OpenFOAM on a drawn rise with one obstacle (1.28M cells, 2026-11-18): speed RMS 10.9%
+of inflow, bias -0.3%, vector RMS 13.3%, correlation 0.82. The collocated solver on the same
+bake: 9.9%, -0.7%, 16.8%, 0.76. dev/MAC-GRID.md has the details.
 
 Known and left alone: `setup()` sets `cellW = width / (NX + 2)` and `windowResized()` sets
 `width / NX`; and `index.html` sets `p5.disableFriendlyErrors` one line before p5 loads,

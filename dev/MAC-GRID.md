@@ -256,11 +256,26 @@ roughness check. `K_OPEN = 0` fails the slot check. Diffusion and the opening dr
 off fail the inflow-shut check (mean 0.22 after 1200 steps). Sediment left out of the pond's
 level fails the sediment check.
 
+### Against OpenFOAM (2026-11-18)
+
+The scene of 2026-11-13 (a drawn rise and one circle, inflow 2.5), baked again through the
+bridge, which now writes its case with this repo's `bridge/case_generator.js`. Its own Python
+port did not flip y and used the reference canvas's scale for every canvas, so the 2026-11-13
+bake was not the scene on the page. 1.28M cells, k-epsilon, 1000 iterations. Both live
+solvers were compared with the same result, each time-averaged over 600 steps after 1500:
+
+| Live solver | Speed RMS | Bias | Vector RMS | Correlation |
+|---|---|---|---|---|
+| Collocated (cd40b30) | 9.9% | -0.7% | 16.8% | 0.76 |
+| Staggered (e0ca1ff) | 10.9% | -0.3% | 13.3% | 0.82 |
+
+All figures are fractions of the inflow. The staggered solver gets the direction and pattern
+of the flow closer and the speeds very slightly less close. Both do much better than the
+2026-11-13 figures (RMS 15%, correlation 0.51), most of that from the case now being the
+scene.
+
 ### Not done
 
-- The OpenFOAM comparison has not been re-run against this solver. On 2026-11-13 (drawn
-  rise, one obstacle, 880k cells) the collocated solver had RMS 15% of inflow, bias -1% and
-  correlation 0.51.
 - The dam is a rigid lid with a storage term. The pond's level is one number. The water
   upstream does not slope toward the crest, and the pond is still until it spills.
 - An obstacle's height is the same for all of them (`WALL_FREEBOARD`). A low sill and a tall
