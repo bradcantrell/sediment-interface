@@ -423,6 +423,8 @@ registerModel({
     { id: 'river', after: 'welcome', title: 'The river', text:
       `<p>This model is a stretch of river seen from above. Water comes in at the left edge and leaves at the right, and the top and bottom edges hold it in like banks.</p>
        <p>Use it to ask what a change in the channel does downstream. A bar that forms below a bridge pier, a pool that scours where the flow is pinched, sediment that drops out in the slack water behind a planted island.</p>` },
+    { id: 'river-objects', after: 'draw', target: guideCanvas, title: 'What an object does', text:
+      `<p>Then watch. Sediment usually piles up in the slow water behind an object and gets scoured away beside it, where the water squeezes past.</p>` },
     { id: 'river-physics', after: 'thumb', target: guideSection('reset-physics', 'erosion-prob'), title: 'Physics', text:
       `<p>These change how the river behaves. <b>inflow</b> is how fast the water comes in. Faster water carries sediment further and scours harder. <b>friction</b> is the drag of the riverbed on all of the water. More friction slows the water everywhere, so more settles and less is lifted.</p>
        <p><b>settle thresh</b> is the speed below which a grain can settle, and <b>settle prob</b> is how likely it is to settle each moment once it is that slow. <b>erode thresh</b> is the speed above which the water can lift a deposit again, and <b>erode prob</b> is how likely that is. Together they decide where the ground builds and where it wears.</p>
