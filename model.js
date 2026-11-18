@@ -216,8 +216,11 @@ const DEPTH_SOR = 1.7;                     // over-relaxation for the depth-weig
 let depthGrid = null, depthDirty = true;
 let secA = null, secD = null, secP = null, secC = null;   // per-column work arrays for sectionPressure()
 
+let depthVersion = 0;                      // counts rebuilds, so the MAC solver knows its face depths are stale
+
 function rebuildDepthGrid() {
   depthDirty = false;
+  depthVersion++;
   let hasDepo = false;
   if (depoGrid) { for (let k = 0; k < depoGrid.length; k++) { if (depoGrid[k] > 0) { hasDepo = true; break; } } }
   if (bedPoints.length < 2 && !hasDepo) { depthGrid = null; return; }
@@ -335,8 +338,425 @@ function projectDepth(uVec, vVec, pArr, divArr) {
   setBnd(1, uVec); setBnd(2, vVec);
 }
 
+// Friction: global plus painted zones, precomputed into fricDampGrid (a damping factor per
+// bed cell) when either the global value or a zone changes, so the solvers' inner loops are a
+// lookup rather than an exp() per cell per step. False when there is no friction at all.
+function updateFricDamp() {
+  if (!(friction > 0 || fricGrid)) return false;
+  ensureFricGrid();
+  // Any change of the global value (slider, reset, a restored scene) rebuilds the grid.
+  if (friction !== fricUsed) fricDirty = true;
+  if (fricDirty) {
+    for (let j = 0; j < GH; j++) {
+      for (let i = 0; i < GW; i++) {
+        let f = friction + fricGrid[j * GW + i];
+        fricDampGrid[j * GW + i] = f > 0 ? Math.exp(-f * DT) : 1;
+      }
+    }
+    fricDirty = false; fricUsed = friction;
+  }
+  return true;
+}
+
+// ── The staggered (MAC) solver ──
+// The collocated solver above keeps u and v at cell centres and measures divergence across
+// two cells (u[i+1] - u[i-1]). That leaves every other cell free (odd-even decoupling) and
+// lets flow pass through a face that touches a solid cell, so water is made or lost at
+// obstacles (2026-11-17 stress test, items 5, 20, 21). This solver keeps the normal velocity
+// on each face instead (Harlow and Welch's marker-and-cell grid):
+//
+//   uF[IX(i, j)]  the face between cells (i, j) and (i+1, j), i = 0..NX. Face 0 is the inflow
+//                 edge, face NX the outflow edge.
+//   vF[IX(i, j)]  the face between cells (i, j) and (i, j+1), j = 0..NY. Faces 0 and NY are
+//                 the banks and stay closed.
+//   mac.p         pressure at cell centres.
+//
+// A face is open only if both of its cells are water and that water is connected to the
+// outflow. Closed faces carry nothing. Each step: inflow on face 0, semi-Lagrangian advection
+// of the faces (the backtrace stops at the first solid cell it meets), a small explicit
+// diffusion, then a pressure solve that drives div(h u) to zero in every cell, h being the
+// face depth from depthGrid (1 with no bed). The solve is preconditioned conjugate gradients
+// (see macSolve()) run to a fixed residual, not a fixed number of sweeps, so the answer does
+// not depend, beyond that residual, on where it started. Friction is applied after the solve, as in the old path. The
+// faces are then averaged to cell centres into u and v, which is all the interface sees.
+//
+// With every cell of a column summed, div(h u) = 0 says the discharge through one column of
+// faces equals the discharge through the next: conservation along the channel is exact to
+// the solver tolerance, with or without obstacles.
+//
+// solverMode chooses the path; 'stam' runs the collocated solver unchanged. ?solver=mac in
+// the page address turns this one on.
+let solverMode = 'stam';
+try { let q = new URLSearchParams(window.location.search).get('solver'); if (q === 'mac' || q === 'stam') solverMode = q; } catch (e) {}
+
+const MAC_TOL = 1e-3;          // largest |div(h u)| left in any cell, index units (a face at inflow speed carries ~2.5)
+const MAC_MAX_ITERS = 400;     // a cap, not the stopping rule; macStats.iters says how many were used
+const MAC_MIC_TAU = 0.97, MAC_MIC_SIGMA = 0.25;   // modified incomplete Cholesky, as in Bridson's Fluid Simulation for Computer Graphics
+let mac = null;
+let macStats = { iters: 0, residual: 0, active: 0 };
+
+function macAlloc() {
+  const f64 = () => new Float64Array(SIZE);
+  mac = {
+    uF: f64(), vF: f64(), uN: f64(), vN: f64(),
+    hU: f64(), hV: f64(), openU: new Uint8Array(SIZE), openV: new Uint8Array(SIZE),
+    active: new Uint8Array(SIZE), cells: new Int32Array(NX * NY), nCells: 0,
+    Adiag: f64(), Ax: f64(), Ay: f64(), precon: f64(), Lx: f64(), Ly: f64(), colOf: new Int32Array(NX * NY),
+    p: f64(), r: f64(), z: f64(), s: f64(), q: f64(),
+    dist: new Float32Array(SIZE),
+    colD: new Float64Array(NX + 2), colO: new Float64Array(NX + 2), colR: new Float64Array(NX + 2),
+    colC: new Float64Array(NX + 2), colX: new Float64Array(NX + 2),
+    solidSeen: new Uint8Array(SIZE), depthSeen: -1, built: false,
+    uLast: new Float32Array(SIZE), vLast: new Float32Array(SIZE),
+  };
+}
+
+// The faces, the connected water, the face depths, the pressure matrix and its
+// preconditioner, and the distance to the nearest solid cell. Rebuilt only when the solid
+// mask or the depth grid changes.
+function macRebuild() {
+  const M = mac, H = depthGrid, W = NX + 2;
+  M.solidSeen.set(solid); M.depthSeen = depthVersion; M.built = true;
+  const { openU, openV, hU, hV, active } = M;
+  openU.fill(0); openV.fill(0); active.fill(0);
+  // Water connected to the outflow, found by a flood fill from the last column. Water cut off
+  // from it (a pond inside an obstacle, everything above a wall across the whole channel)
+  // has nowhere to send the inflow; its faces are closed and it stands still.
+  const stack = [];
+  for (let j = 1; j <= NY; j++) { let c = IX(NX, j); if (!solid[c]) { active[c] = 1; stack.push(c); } }
+  while (stack.length) {
+    let c = stack.pop(), i = c % W, j = (c - i) / W;
+    if (i > 1 && !solid[c-1] && !active[c-1]) { active[c-1] = 1; stack.push(c-1); }
+    if (i < NX && !solid[c+1] && !active[c+1]) { active[c+1] = 1; stack.push(c+1); }
+    if (j > 1 && !solid[c-W] && !active[c-W]) { active[c-W] = 1; stack.push(c-W); }
+    if (j < NY && !solid[c+W] && !active[c+W]) { active[c+W] = 1; stack.push(c+W); }
+  }
+  for (let j = 1; j <= NY; j++) {
+    for (let i = 0; i <= NX; i++) {
+      let c = IX(i, j);
+      openU[c] = (i === 0) ? active[c+1] : (i === NX ? active[c] : (active[c] && active[c+1] ? 1 : 0));
+      hU[c] = H ? 0.5 * (H[c] + H[c+1]) : 1;
+    }
+  }
+  for (let j = 1; j < NY; j++) {
+    for (let i = 1; i <= NX; i++) {
+      let c = IX(i, j);
+      openV[c] = active[c] && active[c+W] ? 1 : 0;
+      hV[c] = H ? 0.5 * (H[c] + H[c+W]) : 1;
+    }
+  }
+  // A p = -div: for each cell, the sum over its open faces of h_f (p_c - p_neighbour). The
+  // inflow face has its speed given, so it holds no pressure; the outflow face sees p = 0 one
+  // half cell out (the ghost is -p_c, as setBndPressureOpen() does), so it counts twice.
+  const { Adiag, Ax, Ay, precon, cells } = M;
+  Adiag.fill(0); Ax.fill(0); Ay.fill(0); precon.fill(0); M.Lx.fill(0); M.Ly.fill(0);
+  let n = 0;
+  for (let j = 1; j <= NY; j++) {
+    for (let i = 1; i <= NX; i++) {
+      let c = IX(i, j);
+      if (!active[c]) continue;
+      cells[n++] = c;
+      let d = 0;
+      if (openU[c-1] && i > 1) d += hU[c-1];
+      if (openU[c]) { if (i < NX) { d += hU[c]; Ax[c] = -hU[c]; } else d += 2 * hU[c]; }
+      if (openV[c-W]) d += hV[c-W];
+      if (openV[c]) { d += hV[c]; Ay[c] = -hV[c]; }
+      Adiag[c] = d;
+    }
+  }
+  M.nCells = n;
+  for (let k = 0; k < n; k++) {
+    let c = cells[k];
+    let a = Ax[c-1] * precon[c-1], b = Ay[c-W] * precon[c-W];
+    let e = Adiag[c] - a * a - b * b
+          - MAC_MIC_TAU * (Ax[c-1] * Ay[c-1] * precon[c-1] * precon[c-1] + Ay[c-W] * Ax[c-W] * precon[c-W] * precon[c-W]);
+    if (e < MAC_MIC_SIGMA * Adiag[c]) e = Adiag[c];
+    precon[c] = e > 0 ? 1 / Math.sqrt(e) : 0;
+  }
+  for (let k = 0; k < n; k++) { let c = cells[k]; M.Lx[c] = Ax[c] * precon[c]; M.Ly[c] = Ay[c] * precon[c]; M.colOf[k] = c % W; }
+  // The column-sum system, for the preconditioner's coarse correction (see macSolve()):
+  // A summed over each column of cells, a tridiagonal matrix with one unknown per column.
+  // colD is its diagonal, colO couples column i to column i+1.
+  M.colD.fill(0); M.colO.fill(0);
+  for (let k = 0; k < n; k++) {
+    let c = cells[k], i = c % W;
+    M.colD[i] += Adiag[c] + 2 * Ay[c];
+    M.colO[i] += Ax[c];
+  }
+  // Chebyshev distance, in cells, from each cell to the nearest solid cell (capped), two
+  // chamfer passes. The advection backtrace uses it to take long steps through open water.
+  const D = M.dist, CAP = 1e4;
+  for (let c = 0; c < SIZE; c++) D[c] = solid[c] ? 0 : CAP;
+  for (let j = 1; j <= NY; j++)
+    for (let i = 1; i <= NX; i++) {
+      let c = IX(i, j);
+      if (!D[c]) continue;
+      D[c] = Math.min(D[c], D[c-1] + 1, D[c-W] + 1, D[c-W-1] + 1, D[c-W+1] + 1);
+    }
+  for (let j = NY; j >= 1; j--)
+    for (let i = NX; i >= 1; i--) {
+      let c = IX(i, j);
+      if (!D[c]) continue;
+      D[c] = Math.min(D[c], D[c+1] + 1, D[c+W] + 1, D[c+W+1] + 1, D[c+W-1] + 1);
+    }
+}
+
+// Bilinear samples of the face fields at a point in cell-index coordinates (cell (i, j) has
+// its centre at (i, j)). u faces sit at (i + 0.5, j), v faces at (i, j + 0.5).
+function macSampleU(F, x, y) {
+  let fx = Math.min(NX, Math.max(0, x - 0.5)), fy = Math.min(NY, Math.max(1, y));
+  let i0 = Math.min(NX - 1, Math.floor(fx)), j0 = Math.min(NY - 1, Math.floor(fy));
+  let sx = fx - i0, sy = fy - j0, c = IX(i0, j0), W = NX + 2;
+  return (1-sx)*(1-sy)*F[c] + sx*(1-sy)*F[c+1] + (1-sx)*sy*F[c+W] + sx*sy*F[c+W+1];
+}
+function macSampleV(F, x, y) {
+  let fx = Math.min(NX, Math.max(1, x)), fy = Math.min(NY, Math.max(0, y - 0.5));
+  let i0 = Math.min(NX - 1, Math.floor(fx)), j0 = Math.min(NY - 1, Math.floor(fy));
+  let sx = fx - i0, sy = fy - j0, c = IX(i0, j0), W = NX + 2;
+  return (1-sx)*(1-sy)*F[c] + sx*(1-sy)*F[c+1] + (1-sx)*sy*F[c+W] + sx*sy*F[c+W+1];
+}
+
+// Where the water now at (x, y) came from, moving back by (dx, dy). The path is walked in
+// steps no longer than the distance to the nearest solid cell allows, and stops at the last
+// point before a solid cell, so a backtrace never jumps a wall. (The old advect() checked
+// only the corners at the far end of a jump of up to 12.8 cells per unit speed.)
+const macTrace = { x: 0, y: 0 };
+function macBacktrace(x, y, dx, dy) {
+  const D = mac.dist, L = Math.max(Math.abs(dx), Math.abs(dy));
+  let t = 0;
+  // A non-finite speed would make every step zero long and never finish. It gives a
+  // non-finite point instead, which carries through to u and v, where the interface sees it
+  // and restarts the flow.
+  if (!Number.isFinite(L)) { macTrace.x = NaN; macTrace.y = NaN; return macTrace; }
+  while (t < 1 && L > 1e-9) {
+    let ci = Math.min(NX, Math.max(1, Math.floor(x + 0.5))), cj = Math.min(NY, Math.max(1, Math.floor(y + 0.5)));
+    let d = D[IX(ci, cj)];
+    let s = d >= 2 ? d - 1.01 : 0.5;                 // cells this step may cover
+    let f = Math.min(1 - t, s / L);
+    let nx = x + f * dx, ny = y + f * dy;
+    if (nx < 0.5 || nx > NX + 0.5 || ny < 0.5 || ny > NY + 0.5) {
+      // Leaving the domain: stop at its edge (the inflow, the outflow or a bank).
+      nx = Math.min(NX + 0.5, Math.max(0.5, nx)); ny = Math.min(NY + 0.5, Math.max(0.5, ny));
+      let ni = Math.min(NX, Math.max(1, Math.floor(nx + 0.5))), nj = Math.min(NY, Math.max(1, Math.floor(ny + 0.5)));
+      if (!solid[IX(ni, nj)]) { x = nx; y = ny; }
+      break;
+    }
+    let ni = Math.floor(nx + 0.5), nj = Math.floor(ny + 0.5);
+    if (solid[IX(ni, nj)]) break;
+    x = nx; y = ny; t += f;
+  }
+  macTrace.x = x; macTrace.y = y;
+  return macTrace;
+}
+
+// Conjugate gradients on A p = b over the connected water, preconditioned with MIC(0),
+// started from the last step's pressure, stopped when no cell is left with more than MAC_TOL.
+// Because it is run to a residual, carrying the pressure over only saves iterations; the
+// result is the same field (the collocated solver could not do that: see sectionPressure()).
+function macSolve(b) {
+  const M = mac, { Adiag, Ax, Ay, Lx, Ly, precon, cells, colOf, p, r, z, s, q } = M, n = M.nCells, W = NX + 2;
+  const { colD, colO, colR, colC, colX } = M;
+  // MIC(0) alone handles short-range error well and the channel-long part badly: the
+  // pressure that tells water upstream about an obstacle took 60 of 85 iterations. So the
+  // preconditioner also solves the column-sum system exactly (one unknown per column, as
+  // sectionPressure() does for the old path) and adds that correction, uniform down each
+  // column (an additive two-level preconditioner; still symmetric, so CG holds). Returns
+  // r . z, which CG needs next.
+  const applyPrecon = (rr, out) => {
+    colR.fill(0);
+    for (let k = 0; k < n; k++) colR[colOf[k]] += rr[cells[k]];
+    let prevC = 0, prevX = 0;
+    for (let i = 1; i <= NX; i++) {
+      let lo = colO[i-1], den = colD[i] - lo * prevC;
+      if (!(den > 1e-12)) { colC[i] = 0; colX[i] = 0; prevC = 0; prevX = 0; continue; }
+      colC[i] = colO[i] / den;
+      colX[i] = (colR[i] - lo * prevX) / den;
+      prevC = colC[i]; prevX = colX[i];
+    }
+    for (let i = NX - 1; i >= 1; i--) colX[i] -= colC[i] * colX[i+1];
+    for (let k = 0; k < n; k++) {
+      let c = cells[k];
+      out[c] = (rr[c] - Lx[c-1] * out[c-1] - Ly[c-W] * out[c-W]) * precon[c];
+    }
+    for (let k = n - 1; k >= 0; k--) {
+      let c = cells[k];
+      out[c] = (out[c] - Lx[c] * out[c+1] - Ly[c] * out[c+W]) * precon[c];
+    }
+    let dot = 0;
+    for (let k = 0; k < n; k++) { let c = cells[k]; out[c] += colX[colOf[k]]; dot += out[c] * rr[c]; }
+    return dot;
+  };
+  // Inactive cells hold zero in every vector, so the stencils can read them freely.
+  z.fill(0); s.fill(0); q.fill(0);
+  let rmax = 0, bmax = 0;
+  for (let k = 0; k < n; k++) {
+    let c = cells[k];
+    r[c] = b[c] - (Adiag[c] * p[c] + Ax[c] * p[c+1] + Ax[c-1] * p[c-1] + Ay[c] * p[c+W] + Ay[c-W] * p[c-W]);
+    let a = Math.abs(r[c]); if (a > rmax) rmax = a;
+    a = Math.abs(b[c]); if (a > bmax) bmax = a;
+  }
+  // Start from zero when that is the better guess. Always when there is nothing to solve:
+  // still water started from the last pressure was left moving at the tolerance, about 1e-3.
+  if (bmax <= MAC_TOL || bmax < rmax) {
+    for (let k = 0; k < n; k++) { let c = cells[k]; p[c] = 0; r[c] = b[c]; }
+    rmax = bmax;
+  }
+  let it = 0;
+  if (rmax > MAC_TOL) {
+    let rho = applyPrecon(r, z);
+    for (let k = 0; k < n; k++) { let c = cells[k]; s[c] = z[c]; }
+    for (it = 1; it <= MAC_MAX_ITERS; it++) {
+      let sq = 0;
+      for (let k = 0; k < n; k++) {
+        let c = cells[k];
+        let y = Adiag[c] * s[c] + Ax[c] * s[c+1] + Ax[c-1] * s[c-1] + Ay[c] * s[c+W] + Ay[c-W] * s[c-W];
+        q[c] = y; sq += s[c] * y;
+      }
+      if (!(sq > 0)) break;
+      let alpha = rho / sq;
+      rmax = 0;
+      for (let k = 0; k < n; k++) { let c = cells[k]; p[c] += alpha * s[c]; r[c] -= alpha * q[c]; let a = Math.abs(r[c]); if (a > rmax) rmax = a; }
+      if (rmax <= MAC_TOL) break;
+      let rhoNew = applyPrecon(r, z);
+      let beta = rhoNew / rho; rho = rhoNew;
+      for (let k = 0; k < n; k++) { let c = cells[k]; s[c] = z[c] + beta * s[c]; }
+    }
+  }
+  macStats.iters = it; macStats.residual = rmax; macStats.active = n;
+}
+
+function macStep() {
+  if (!mac) macAlloc();
+  const M = mac, W = NX + 2;
+  let { uF, vF, uN, vN } = M;
+  const { openU, openV, hU, hV } = M;
+  let rebuilt = false;
+  // The mask (an object placed, moved, timed in or out) or the depth changed.
+  if (!M.built || M.depthSeen !== depthVersion) rebuilt = true;
+  else for (let c = 0; c < SIZE; c++) if (solid[c] !== M.solidSeen[c]) { rebuilt = true; break; }
+  if (rebuilt) macRebuild();
+  // The interface owns u and v. If anything other than this solver wrote them since the last
+  // step (R, a restart after a non-finite flow, a check setting a field), the faces are taken
+  // from what is there now, each the mean of its two cells.
+  let written = false;
+  for (let c = 0; c < SIZE; c++) if (u[c] !== M.uLast[c] || v[c] !== M.vLast[c]) { written = true; break; }
+  if (written) {
+    for (let j = 1; j <= NY; j++) for (let i = 0; i <= NX; i++) { let c = IX(i, j); uF[c] = 0.5 * (u[c] + u[c+1]); }
+    for (let j = 0; j <= NY; j++) for (let i = 1; i <= NX; i++) { let c = IX(i, j); vF[c] = 0.5 * (v[c] + v[c+W]); }
+  }
+  if (rebuilt || written) {
+    for (let c = 0; c < SIZE; c++) { if (!openU[c]) uF[c] = 0; if (!openV[c]) vF[c] = 0; }
+  }
+
+  // Advection: each open face takes the value found where its water was one step ago.
+  // dt0 is the old solver's scale (12.8 cells per unit speed per step), kept so the flow
+  // moves as it did.
+  const dt0 = DT * NX;
+  for (let j = 1; j <= NY; j++) {
+    for (let i = 1; i <= NX; i++) {
+      let c = IX(i, j);
+      if (!openU[c]) { uN[c] = 0; continue; }
+      let ip = Math.min(i + 1, NX);
+      let vc = 0.25 * (vF[c-W] + vF[c] + vF[IX(ip, j-1)] + vF[IX(ip, j)]);
+      let b = macBacktrace(i + 0.5, j, -dt0 * uF[c], -dt0 * vc);
+      uN[c] = macSampleU(uF, b.x, b.y);
+    }
+  }
+  for (let j = 1; j < NY; j++) {
+    for (let i = 1; i <= NX; i++) {
+      let c = IX(i, j);
+      if (!openV[c]) { vN[c] = 0; continue; }
+      let uc = 0.25 * (uF[c-1] + uF[c] + uF[c-1+W] + uF[c+W]);
+      let b = macBacktrace(i, j + 0.5, -dt0 * uc, -dt0 * vF[c]);
+      vN[c] = macSampleV(vF, b.x, b.y);
+    }
+  }
+  // Inflow: the same speed and noise as the old path, on the inflow faces.
+  for (let j = 1; j <= NY; j++) {
+    let c = IX(0, j);
+    uN[c] = openU[c] ? inflowVel + (noise(j * 0.15, simTime * 0.3) - 0.5) * 0.3 : 0;
+  }
+  // Diffusion, one explicit step with the old path's coefficient (DT * VISC * NX * NY, about
+  // 0.06, well inside the explicit limit of 0.25). A closed neighbour stands in the face's own
+  // value, so walls are free-slip, as in linSolve().
+  const a = DT * VISC * NX * NY;
+  for (let j = 1; j <= NY; j++) {
+    for (let i = 1; i <= NX; i++) {
+      let c = IX(i, j);
+      if (!openU[c]) { uF[c] = 0; continue; }
+      let x = uN[c];
+      let L = openU[c-1] ? uN[c-1] : x, R = (i < NX && openU[c+1]) ? uN[c+1] : x;
+      let B = openU[c-W] ? uN[c-W] : x, T = openU[c+W] ? uN[c+W] : x;
+      uF[c] = x + a * (L + R + B + T - 4 * x);
+    }
+    uF[IX(0, j)] = uN[IX(0, j)];
+  }
+  for (let j = 1; j < NY; j++) {
+    for (let i = 1; i <= NX; i++) {
+      let c = IX(i, j);
+      if (!openV[c]) { vF[c] = 0; continue; }
+      let x = vN[c];
+      let L = openV[c-1] ? vN[c-1] : x, R = openV[c+1] ? vN[c+1] : x;
+      let B = openV[c-W] ? vN[c-W] : x, T = openV[c+W] ? vN[c+W] : x;
+      vF[c] = x + a * (L + R + B + T - 4 * x);
+    }
+  }
+
+  // Projection: div(h u) of each connected cell, solved away.
+  const b = M.uN;   // free again: reused for the right-hand side
+  b.fill(0);
+  for (let k = 0; k < M.nCells; k++) {
+    let c = M.cells[k];
+    b[c] = -(hU[c] * uF[c] - hU[c-1] * uF[c-1] + hV[c] * vF[c] - hV[c-W] * vF[c-W]);
+  }
+  macSolve(b);
+  const P = M.p;
+  for (let j = 1; j <= NY; j++) {
+    for (let i = 1; i < NX; i++) { let c = IX(i, j); if (openU[c]) uF[c] -= P[c+1] - P[c]; }
+    let c = IX(NX, j); if (openU[c]) uF[c] += 2 * P[c];
+  }
+  for (let j = 1; j < NY; j++)
+    for (let i = 1; i <= NX; i++) { let c = IX(i, j); if (openV[c]) vF[c] -= P[c+W] - P[c]; }
+
+  // Friction on the solved faces, as the old path applies it to the solved cells. The inflow
+  // face is the boundary condition and is left alone.
+  if (updateFricDamp()) {
+    for (let j = 1; j <= NY; j++) {
+      let gj = Math.min(GH - 1, Math.floor(j * cellH / DEPO_CELL));
+      for (let i = 1; i <= NX; i++) {
+        let c = IX(i, j);
+        if (!openU[c]) continue;
+        let gi = Math.min(GW - 1, Math.floor((i + 0.5) * cellW / DEPO_CELL));
+        uF[c] *= fricDampGrid[gj * GW + gi];
+      }
+    }
+    for (let j = 1; j < NY; j++) {
+      let gj = Math.min(GH - 1, Math.floor((j + 0.5) * cellH / DEPO_CELL));
+      for (let i = 1; i <= NX; i++) {
+        let c = IX(i, j);
+        if (!openV[c]) continue;
+        let gi = Math.min(GW - 1, Math.floor(i * cellW / DEPO_CELL));
+        vF[c] *= fricDampGrid[gj * GW + gi];
+      }
+    }
+  }
+
+  // To the interface: each cell the mean of its two faces in each direction.
+  for (let j = 1; j <= NY; j++)
+    for (let i = 1; i <= NX; i++) {
+      let c = IX(i, j);
+      if (solid[c]) { u[c] = 0; v[c] = 0; continue; }
+      u[c] = 0.5 * (uF[c-1] + uF[c]);
+      v[c] = 0.5 * (vF[c-W] + vF[c]);
+    }
+  setBnd(1, u); setBnd(2, v);
+  M.uLast.set(u); M.vLast.set(v);
+  for (let k = 0; k < M.nCells; k++) { let c = M.cells[k]; p[c] = P[c]; }
+}
+
 function velocityStep() {
   if (depthDirty) rebuildDepthGrid();
+  if (solverMode === 'mac') { macStep(); return; }
   const bed = !!depthGrid;
   // Dirichlet inflow
   for (let j = 1; j <= NY; j++) {
@@ -354,22 +774,9 @@ function velocityStep() {
 
   // Bed friction: exponential drag per step. With none, the field keeps near-inflow speed
   // everywhere, particles never drop below settleThresh, and almost nothing deposits.
-  // Friction: global plus painted zones, applied per cell to the solved field. Precomputed
-  // into fricDampGrid when either the global value or a zone changes, so the inner loop is a
-  // lookup rather than an exp() per cell per step.
-  if (friction > 0 || fricGrid) {
-    ensureFricGrid();
-    // Any change of the global value (slider, reset, a restored scene) rebuilds the grid.
-    if (friction !== fricUsed) fricDirty = true;
-    if (fricDirty) {
-      for (let j = 0; j < GH; j++) {
-        for (let i = 0; i < GW; i++) {
-          let f = friction + fricGrid[j * GW + i];
-          fricDampGrid[j * GW + i] = f > 0 ? Math.exp(-f * DT) : 1;
-        }
-      }
-      fricDirty = false; fricUsed = friction;
-    }
+  // Friction: global plus painted zones, applied per cell to the solved field (see
+  // updateFricDamp()).
+  if (updateFricDamp()) {
     for (let j = 1; j <= NY; j++) {
       let gj = Math.min(GH - 1, Math.floor(j * cellH / DEPO_CELL));
       for (let i = 1; i <= NX; i++) {
@@ -487,7 +894,10 @@ registerModel({
   step() { velocityStep(); },
 
   // R, or the interface found the flow non-finite: start the solver from rest.
-  restart() { uPrev.fill(0); vPrev.fill(0); p.fill(0); divArr.fill(0); },
+  restart() {
+    uPrev.fill(0); vPrev.fill(0); p.fill(0); divArr.fill(0);
+    if (mac) { mac.uF.fill(0); mac.vF.fill(0); mac.p.fill(0); }
+  },
 
   // The drawn bed or the deposit changed: the flow depth has to be rebuilt.
   bedChanged() { depthDirty = true; },

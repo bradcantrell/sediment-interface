@@ -313,4 +313,103 @@ module.exports = function ({ app, S, check }) {
     app.setBedPoints(savedBed); app.run("bedXSections = globalThis.__xs", (globalThis.__xs = savedXS)); app.rebuildUserBedGrid();
     app.setObstacles(savedObs); app.run("solidMaskDirty = true");
   }
+
+  // ---------------------------------------------------------------- the staggered solver conserves water at obstacles
+  // The collocated solver loses or makes water at obstacles (2026-11-17 stress test, items 5,
+  // 20, 21): a gap in a wall passed 12-45% of the flow, the flow behind a wide wall was up to
+  // 170% of the inflow, a wall dropped into running water left 45-66% flowing behind it, and
+  // under friction the plain projection lost 99.9% of the discharge by the outflow. The MAC
+  // solver (solverMode 'mac') carries the normal velocity on faces and solves div(h u) = 0 to
+  // a residual, so the discharge through every column of faces is the inflow's. These checks
+  // run it whatever the page's default is, then put the default back. The stam path fails
+  // all but the last of them.
+  //
+  // Discharge here is the sum of h * u over a column of faces (mac.hU, mac.uF), and also over
+  // a column of cells (depthGrid, u), which is what the stress test measured and what the
+  // particles see. The tolerance is 0.5% of the inflow's discharge: measured spread is 0.001%
+  // on faces and 0.1% on cells (where the depth is taken at the centre, not on the face).
+  {
+    const st0 = S(), NX = st0.NX, NY = st0.NY, IXf = (i, j) => i + j * (NX + 2);
+    const keep = { mode: app.run("solverMode"), obs: app.run("JSON.stringify(obstacles)"), bed: st0.bedPoints,
+                   xs: app.run("bedXSections"), fric: app.run("friction"), inflow: st0.inflowVel };
+    const clips = [{ start: 0, dur: 1e9 }];
+    const setScene = (obs, bed, fric) => {
+      app.run(`solverMode = 'mac'; obstacles = ${JSON.stringify(obs)}; buildSolidMask(); solidMaskDirty = false;
+               bedXSections = []; depoGrid.fill(0); friction = ${fric}; fricGrid = null; fricDirty = true; inflowVel = 2.5;
+               restartFlow(false); simTime = 6.4`);
+      app.setBedPoints(bed); app.rebuildUserBedGrid();
+    };
+    const steps = (n) => { for (let k = 0; k < n; k++) app.run("simTime += DT; model.step()"); };
+    const faceQ = (i) => app.run(`(() => { let s = 0; for (let j = 1; j <= NY; j++) { let c = IX(${i}, j); s += mac.hU[c] * mac.uF[c]; } return s; })()`);
+    const cellQ = (i) => { const U = S().U, sol = S().solid, Hg = app.run("depthGrid"); let s = 0; for (let j = 1; j <= NY; j++) { const c = IXf(i, j); if (!sol[c]) s += (Hg ? Hg[c] : 1) * U[c]; } return s; };
+    const wallCol = () => { const sol = S().solid; let best = 0, bi = 0; for (let i = 1; i <= NX; i++) { let n = 0; for (let j = 1; j <= NY; j++) if (sol[IXf(i, j)]) n++; if (n > best) { best = n; bi = i; } } return [bi, NY - best]; };
+    const spread = (qs, q0) => Math.max(...qs.map(q => Math.abs(q / q0 - 1)));
+    const bedPts = [{ x: 150, z: 10 }, { x: 600, z: 120 }, { x: 1000, z: 20 }].map(p => ({ x: p.x * st0.width / 1200, z: p.z }));
+    const gapWall = { type: "rect", x: st0.width * 0.5, y: st0.height * 0.45, w: 40, h: st0.height * 0.875, rotation: 0, clips };
+
+    // 1. A gap in a wall passes all the water, plain and over a drawn bed.
+    for (const [label, bed] of [["", []], [" over a drawn bed", bedPts]]) {
+      setScene([gapWall], bed, 0);
+      steps(150);
+      const [wc, open] = wallCol(), q0 = faceQ(0);
+      const fq = [15, wc, wc + 2, 100, 140, NX].map(faceQ), cq = [15, wc, 140].map(cellQ);
+      const ok = open > 0 && open < NY / 4 && spread(fq, q0) < 0.005 && spread(cq, q0) < 0.005;
+      check(ok, "MAC: a gap in a wall passes all the inflow" + label,
+        `${open} rows open at column ${wc}; faces ${fq.map(q => (100 * q / q0).toFixed(2)).join(", ")}% and cells upstream, at the gap, downstream ${cq.map(q => (100 * q / q0).toFixed(1)).join(", ")}% of the inflow ${q0.toFixed(1)}`);
+    }
+
+    // 2. A wall dropped into running water. Across part of the channel: the flow behind it is
+    // the inflow's from the first step after. Across all of it: the inflow cannot reach the
+    // outflow, so no water passes any column (a rigid-lid model has no way over the top). What
+    // was moving behind the wall may still turn about there, but carries nothing downstream.
+    {
+      setScene([], bedPts, 0);
+      steps(150);
+      app.run(`obstacles = ${JSON.stringify([gapWall])}; solidMaskDirty = true; buildSolidMask(); solidMaskDirty = false`);
+      steps(1);
+      const qGap = [15, wallCol()[0], 100, 140].map(faceQ), q0g = faceQ(0);
+      app.run(`obstacles = ${JSON.stringify([{ ...gapWall, h: st0.height * 3 }])}; buildSolidMask(); solidMaskDirty = false`);
+      steps(1);
+      const qFull = [0, 15, 100, 140, NX].map(faceQ);
+      check(spread(qGap, q0g) < 0.005 && Math.max(...qFull.map(Math.abs)) < 0.005 * q0g, "MAC: a wall dropped into running water conserves the flow at once",
+        `gap wall, one step after: ${qGap.map(q => (100 * q / q0g).toFixed(2)).join(", ")}% of the inflow upstream, at the gap, behind; full wall: ${qFull.map(q => (100 * q / q0g).toFixed(2)).join(", ")}% at the inflow, upstream, behind, outflow`);
+    }
+
+    // 3. No face that touches a solid cell carries water, and every connected cell has
+    // div(h u) within the solver tolerance.
+    {
+      setScene([{ type: "circle", x: st0.width * 0.3, y: st0.height * 0.4, w: 90, h: 90, rotation: 0, clips },
+                { type: "rect", x: st0.width * 0.6, y: st0.height * 0.6, w: 120, h: 50, rotation: 35, clips }], bedPts, 1);
+      steps(100);
+      const r = app.run(`(() => { const M = mac, W = NX + 2; let leak = 0, div = 0;
+        for (let j = 1; j <= NY; j++) for (let i = 0; i <= NX; i++) { let c = IX(i, j);
+          let a = i >= 1 && solid[c], b = i < NX && solid[c + 1]; if ((a || b) && M.uF[c] !== 0) leak++; }
+        for (let j = 0; j <= NY; j++) for (let i = 1; i <= NX; i++) { let c = IX(i, j);
+          let a = j >= 1 && solid[c], b = j < NY && solid[c + W]; if ((a || b || j === 0 || j === NY) && M.vF[c] !== 0) leak++; }
+        return [leak, M.nCells]; })()`);
+      // The divergence straight after the projection: one more step with friction off, since
+      // painted or global friction scales each face after the solve.
+      app.run("friction = 0; fricDirty = true"); steps(1);
+      const d = app.run(`(() => { const M = mac, W = NX + 2; let mx = 0; for (let k = 0; k < M.nCells; k++) { let c = M.cells[k];
+        let q = M.hU[c] * M.uF[c] - M.hU[c-1] * M.uF[c-1] + M.hV[c] * M.vF[c] - M.hV[c-W] * M.vF[c-W]; mx = Math.max(mx, Math.abs(q)); } return mx; })()`);
+      const tol = app.run("MAC_TOL");
+      check(r[0] === 0 && d <= tol * 1.0001, "MAC: no face into a solid carries water, and div(h u) is solved away in every cell",
+        `${r[0]} faces against a solid carry water; largest |div(h u)| ${d.toExponential(2)} over ${r[1]} cells (tolerance ${tol})`);
+    }
+
+    // 4. Friction does not drain the channel. Uniform friction scales every face alike, so
+    // the discharge is the same at every column whatever its value; the plain projection lost
+    // 99.9% of it by the outflow at friction 3.
+    {
+      setScene([], [], 3);
+      steps(13);    // about one second, when the plain projection was worst
+      const q = [5, 40, 80, 120, 155].map(cellQ);
+      check(spread(q, q[0]) < 0.005, "MAC: friction slows the river without draining it along the channel",
+        `friction 3, one second from rest: discharge at columns 5, 40, 80, 120, 155 is ${q.map(x => x.toFixed(1)).join(", ")}`);
+    }
+
+    app.run(`solverMode = '${keep.mode}'; obstacles = ${keep.obs}; buildSolidMask(); solidMaskDirty = true; depoGrid.fill(0); friction = ${keep.fric}; fricDirty = true; inflowVel = ${keep.inflow}; restartFlow(false)`);
+    app.setBedPoints(keep.bed); app.run("bedXSections = globalThis.__xs", (globalThis.__xs = keep.xs)); app.rebuildUserBedGrid();
+    for (let k = 0; k < 80; k++) app.run("simTime += DT; model.step()");
+  }
 };
