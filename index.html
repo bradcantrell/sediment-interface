@@ -997,16 +997,77 @@ function updateParticles() {
       const amt = d.amt != null ? d.amt : DEPO_AMOUNT;
       addDeposit(d.x, d.y, -amt);   // erode accumulated bed height
       // The lifted grain carries the sand it took back (load), so it puts the same down again.
-      particles.push({ x: d.x+random(-3,3), y: d.y+random(-3,3), vx: vel.vx+random(-0.5,0.5), vy: vel.vy+random(-0.5,0.5), born: simTime, load: amt });
+      particles.push({ x: d.x+random(-3,3), y: d.y+random(-3,3), ox: d.x, oy: d.y, vx: vel.vx+random(-0.5,0.5), vy: vel.vy+random(-0.5,0.5), born: simTime, load: amt });
       deposited.splice(i, 1);
     }
   }
 
-  // Cap tracked deposits: oldest 'compact' into the bed (visual persists in depoBuffer,
-  // no longer erodible). Keeps the deposited array bounded.
+  // Cap tracked deposits: the oldest leave the list (their dots stay drawn in depoBuffer).
+  // Their sand stays in the deposit grid, and liftCompacted() below can still lift it.
   if (deposited.length > particleCount) deposited.splice(0, deposited.length - particleCount);
+  liftCompacted(R);
 
   while (particles.length < particleCount) particles.push(model.respawnParticle());
+}
+
+// Deposit that is no longer on the tracked list: grains past the particle setting, and a
+// saved scene's deposit, which comes back as a grid with no list. It used to be fixed for
+// good, so in a long run almost all of the deposit could never move again (95% of it in the
+// 2026-11-17 stress test). Each frame one row in COMPACT_STRIDE of the deposit grid is
+// checked. Where the grid holds more than the tracked grains put there and the water is fast
+// enough to lift a grain, a grain is lifted at the same rate per grain as a tracked one
+// (erosionProb, the same bed resistance) and carries the sand it took. The sand a cell holds
+// is counted at the centre of the 3 x 3 stamp addDeposit() lays down, which takes half.
+const COMPACT_STRIDE = 4, COMPACT_MAX_LIFTS = 40;
+let trackedGrid = null, compactRow = 0;
+function depoSum3(i, j) {
+  let s = 0;
+  for (let jj = Math.max(0, j - 1); jj <= Math.min(GH - 1, j + 1); jj++)
+    for (let ii = Math.max(0, i - 1); ii <= Math.min(GW - 1, i + 1); ii++) s += depoGrid[jj * GW + ii];
+  return s;
+}
+function liftCompacted(R) {
+  if (!depoGrid) return;
+  if (!trackedGrid || trackedGrid.length !== depoGrid.length) trackedGrid = new Float32Array(depoGrid.length);
+  else trackedGrid.fill(0);
+  for (const d of deposited) {
+    const amt = d.amt != null ? d.amt : DEPO_AMOUNT;
+    const i = Math.floor(d.x / DEPO_CELL - 0.5), j = Math.floor(d.y / DEPO_CELL - 0.5);
+    for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+      const ii = i + di, jj = j + dj;
+      if (ii < 0 || ii >= GW || jj < 0 || jj >= GH) continue;
+      trackedGrid[jj * GW + ii] += amt * ((di === 0 && dj === 0) ? 0.5 : 0.0625);
+    }
+  }
+  const unit = (R.depositAmount ? R.depositAmount(null) : DEPO_AMOUNT) || DEPO_AMOUNT;
+  const cellSize = (cellW + cellH) / 2;
+  let lifts = 0;
+  compactRow = (compactRow + 1) % COMPACT_STRIDE;
+  for (let j = compactRow; j < GH && lifts < COMPACT_MAX_LIFTS; j += COMPACT_STRIDE) {
+    for (let i = 0; i < GW; i++) {
+      const idx = j * GW + i;
+      const free = depoGrid[idx] - trackedGrid[idx];   // sand at this centre no grain on the list owns
+      if (free <= 1e-6) continue;
+      const x = (i + 0.5) * DEPO_CELL, y = (j + 0.5) * DEPO_CELL;
+      const vel = getVelocityAt(x, y);
+      if (mag(vel.vx, vel.vy) / cellSize <= R.erosionThresh) continue;
+      const grains = 2 * free / unit;                  // grains' worth of sand held here
+      const expect = grains * R.erosionProb * COMPACT_STRIDE;
+      if (random() >= Math.min(1, expect)) continue;
+      const bedHere = bedPoints.length >= 2 ? bedZ(x, y) : 0;
+      const resist = bedHere > 0 ? 1.0 / (1.0 + (bedHere / 160) * 2.0) : 1.0;
+      if (random() > resist) continue;
+      // One grain carries what this frame would lift here, never more than the cell holds.
+      // The grain carries what actually came off the grid: addDeposit stops at zero, so a thin
+      // neighbour can give less than its share.
+      const before = depoSum3(i, j);
+      addDeposit(x, y, -Math.min(2 * free, unit * Math.max(1, expect)));
+      const amt = before - depoSum3(i, j);
+      if (!(amt > 0)) continue;
+      particles.push({ x: x + random(-3, 3), y: y + random(-3, 3), ox: x, oy: y, vx: vel.vx, vy: vel.vy, born: simTime, load: amt });
+      if (++lifts >= COMPACT_MAX_LIFTS) break;
+    }
+  }
 }
 
 // ─────────────────────────────────────────────

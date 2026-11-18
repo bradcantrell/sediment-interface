@@ -712,6 +712,7 @@ try {
     const res = withHook(m.rules, "depositAmount", () => 10, () => app.run(`(() => {
       const keep = { depo: depoGrid.slice(), dep: deposited.slice(), parts: particles.slice(), et: erosionThresh, ep: erosionProb };
       const i = Math.floor(GW / 2), j = Math.floor(GH / 2), q = j * GW + i;
+      depoGrid.fill(0);   // no other sand on the grid for the untracked lift to take
       const before = depoGrid[q];
       deposited.length = 0;
       settleParticle({ x: (i + 0.5) * DEPO_CELL, y: (j + 0.5) * DEPO_CELL }, 0);
@@ -727,6 +728,37 @@ try {
     check(Math.abs(res.added - 5) < 1e-6 && res.amt === 10 && res.lifted && Math.abs(res.back) < 1e-6,
           "a model can size a grain's deposit, and lifting the grain takes back the same amount",
           `deposit 10 -> ${res.added.toFixed(2)} at the centre (half), kept ${res.amt}, after lifting ${res.back.toFixed(3)}`);
+  }
+
+  {
+    // Deposit off the tracked list (grains past the particle setting, a saved scene's grid)
+    // can be lifted again, the grains carry exactly the sand that left the grid, and slow
+    // water lifts none of it.
+    const res = app.run(`(() => {
+      const keep = { depo: depoGrid.slice(), dep: deposited.slice(), parts: particles.slice(), et: erosionThresh, ep: erosionProb };
+      const r0 = globalThis.random;
+      try {
+        depoGrid.fill(0); deposited = []; particles = [];
+        const i0 = Math.floor(GW / 2), j0 = Math.floor(GH / 2);
+        for (let j = j0 - 3; j <= j0 + 3; j++) for (let i = i0 - 3; i <= i0 + 3; i++) depoGrid[j * GW + i] = 6;
+        const sum = () => { let s = 0; for (let k = 0; k < depoGrid.length; k++) s += depoGrid[k]; return s; };
+        const s0 = sum();
+        erosionThresh = 1e9;
+        for (let f = 0; f < COMPACT_STRIDE; f++) liftCompacted(model.rules);
+        const slowLifts = particles.length, slowSum = sum();
+        erosionThresh = -1; erosionProb = 1;
+        globalThis.random = (a, b) => (a === undefined ? 0 : b === undefined ? 0 : a);
+        for (let f = 0; f < COMPACT_STRIDE * 3; f++) liftCompacted(model.rules);
+        const lifts = particles.length, carried = particles.reduce((t, p) => t + p.load, 0), s1 = sum();
+        return { s0, slowLifts, slowSum, lifts, carried, gone: s0 - s1 };
+      } finally {
+        globalThis.random = r0;
+        depoGrid.set(keep.depo); deposited = keep.dep; particles = keep.parts; erosionThresh = keep.et; erosionProb = keep.ep;
+      }
+    })()`);
+    check(res.slowLifts === 0 && res.slowSum === res.s0 && res.lifts > 0 && res.gone > 0 && Math.abs(res.carried - res.gone) < 1e-3 * res.s0,
+          "deposit no grain on the list owns can be lifted again, and the grains carry what left the bed",
+          `slow water: ${res.slowLifts} lifts; fast: ${res.lifts} grains carry ${res.carried.toFixed(2)}, the bed lost ${res.gone.toFixed(2)} of ${res.s0.toFixed(0)}`);
   }
 }
 
