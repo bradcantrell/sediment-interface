@@ -696,6 +696,7 @@
         w: o.w || 0, h: o.h || 0,
         size: o.size || 0,
         rotation: o.rotation || 0,
+        top: Number.isFinite(o.top) ? o.top : null,
         points: (o.points && o.type === 'poly') ? o.points.map(function (p) { return { x: p.x, y: p.y }; }) : []
       };
     });
@@ -725,10 +726,14 @@
     add('constant/turbulenceProperties', turbulenceProperties());
     add('constant/momentumTransport', momentumTransport());
 
-    // constant/triSurface/ STL obstacles
-    const zMin = -0.005, zMax = DOMAIN_D + 0.005;
+    // constant/triSurface/ STL obstacles. An object's top is metres above the water surface
+    // (the river's slider). One that stands above it goes through the lid, as every object
+    // used to; one under it is carved to its height, so the water flows over it. (The lid is
+    // rigid here too, so a wall across the channel cannot spill as the live model's dam does.)
+    const zMin = -0.005;
     for (let i = 0; i < obstacles.length; i++) {
       const ob = obstacles[i];
+      const zMax = (ob.top != null && ob.top < 0) ? Math.max(0.05, DOMAIN_D + ob.top) : DOMAIN_D + 0.005;
       const c = dom.toDomain(ob.x, ob.y);
       let stl;
       if (ob.type === 'circle') {

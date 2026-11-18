@@ -432,6 +432,43 @@ module.exports = function ({ app, S, check }) {
         `the 2-row slot carries ${(100 * withLoss[1]).toFixed(1)}% of the flow with the head loss (K_OPEN ${k}), ${(100 * without[1]).toFixed(1)}% without (inviscid 22%)`);
     }
 
+    // 2d. Object heights (Brad, 2026-11-18). A wall across the whole channel whose top is
+    // under the water is a sill: not solid, raised bed, so the river goes over it with all of
+    // its water and speeds up by the depth ratio, and grains cross it. Half the depth here.
+    {
+      const sill = { ...gapWall, h: st0.height * 3, w: 60, top: -1.0 };
+      setScene([sill], [], 0);
+      steps(150);
+      const ic = Math.round(sill.x / st0.cellW), Hd = app.run("depthGrid");
+      const solidN = app.run(`(() => { let n = 0; for (let k = 0; k < solid.length; k++) n += solid[k]; return n; })()`);
+      const q = [15, ic, 140, NX].map(faceQ), q0 = faceQ(0);
+      const uOver = app.run(`(() => { let a = 0; for (let j = 5; j <= NY - 5; j++) a += u[IX(${ic}, j)]; return a / (NY - 9); })()`);
+      const uUp = app.run(`(() => { let a = 0; for (let j = 5; j <= NY - 5; j++) a += u[IX(15, j)]; return a / (NY - 9); })()`);
+      const want = Hd ? Hd[IXf(15, NY >> 1)] / Hd[IXf(ic, NY >> 1)] : NaN;
+      check(solidN === 0 && Hd && Math.abs(Hd[IXf(ic, NY >> 1)] - 0.5) < 1e-6 && spread(q, q0) < 0.005 && Math.abs(uOver / uUp / want - 1) < 0.05,
+        "MAC: an object with its top under the water is a sill the river flows over",
+        `top -1.0 m: ${solidN} solid cells, depth over it ${Hd ? Hd[IXf(ic, NY >> 1)].toFixed(3) : 'none'}; discharge ${q.map(x => (100 * x / q0).toFixed(2)).join(", ")}% of the inflow; speed over it ${(uOver / uUp).toFixed(3)} times upstream, depth ratio ${want.toFixed(3)}`);
+    }
+    // A dam of two walls, the upper half 0.2 m above the water and the lower 1.5 m, at the
+    // lowest inflow (0.5): once the pond passes 0.2 m it spills over the low half only, and
+    // settles where that half alone passes the inflow. (At the default inflow the head that
+    // half needs, over 3 m, tops the tall half too, and both spill.)
+    {
+      const H0 = st0.height, wall = (y, h, top) => ({ type: "rect", x: st0.width * 0.5, y, w: 40, h, rotation: 0, clips, top });
+      setScene([wall(H0 * 0.25 - 20, H0 * 0.5 + 40, 0.2), wall(H0 * 0.75 + 20, H0 * 0.5 + 40, 1.5)], [], 0);
+      app.run("inflowVel = 0.5");
+      steps(2500);
+      const r = app.run(`(() => { const M = mac, W = NX + 2; let lo = 0, hi = 0, nLo = 0;
+        for (let f = 0; f < M.weirWidth; f++) if (M.weirFb[f] < 0.2) nLo++;
+        let i = 0, best = 0; for (let q = 1; q <= NX; q++) { let n = 0; for (let j = 1; j <= NY; j++) if (solid[IX(q, j)]) n++; if (n > best) { best = n; i = q; } }
+        for (let j = 1; j <= NY; j++) { const c = IX(i, j), q = M.hU[c] * M.uF[c]; if (j <= NY / 2) lo += q; else hi += q; }
+        return [M.spilling, M.level, M.qSpill, M.qIn, lo, hi, nLo]; })()`);
+      const lvl = 0.1 + Math.pow(r[3] / (app.run("WEIR_C") * r[6]), 2 / 3);
+      check(r[0] && Math.abs(r[2] / r[3] - 1) < 0.02 && Math.abs(r[5]) < 0.005 * r[3] && Math.abs(r[4] / r[3] - 1) < 0.02 && Math.abs(r[1] - lvl) < 0.01,
+        "MAC: a dam spills over its lowest wall, by the weir law for that wall alone",
+        `level ${r[1].toFixed(3)} (weir law over the ${r[6]} faces of the 0.2 m wall: ${lvl.toFixed(3)}); spill ${r[2].toFixed(1)} of ${r[3].toFixed(1)}; over the low half ${(100 * r[4] / r[3]).toFixed(1)}%, the high half ${(100 * r[5] / r[3]).toFixed(2)}%`);
+    }
+
     // 3. No face that touches a solid cell carries water, and every connected cell has
     // div(h u) within the solver tolerance.
     {

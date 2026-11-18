@@ -126,6 +126,16 @@
       font-size: 11px; color: rgba(255,255,255,0.45);
       pointer-events: none; line-height: 1.7; user-select: none;
     }
+    /* The height of the selected object, next to it on the canvas (model.objectHeight). */
+    #ob-height {
+      position: fixed; z-index: 25; display: none; padding: 6px 9px 7px;
+      background: rgba(12,14,22,0.92); border: 1px solid rgba(255,200,100,0.35); border-radius: 4px;
+      font-size: 10px; color: rgba(255,255,255,0.7); user-select: none; width: 190px;
+    }
+    #ob-height .oh-row { display: flex; justify-content: space-between; margin-bottom: 4px; }
+    #ob-height .oh-val { color: rgba(255,200,100,0.95); }
+    #ob-height input { width: 100%; margin: 0; }
+    #ob-height .oh-note { margin-top: 3px; color: rgba(255,255,255,0.45); white-space: normal; }
     /* The zoom thumbnail, top left, shown only while zoomed in. */
     #zoom-box {
       position: fixed; top: 48px; left: 12px; z-index: 20; display: none;
@@ -291,6 +301,12 @@
 </div>
 
 <div id="zoom-box"><canvas id="zoom-map"></canvas><div id="zoom-text"></div></div>
+
+<div id="ob-height" role="group" aria-label="height of the selected object">
+  <div class="oh-row"><span>height</span><span class="oh-val" id="ob-height-val"></span></div>
+  <input type="range" id="ob-height-slider" aria-label="height">
+  <div class="oh-note" id="ob-height-note"></div>
+</div>
 
 <div id="timeline-bar"><canvas id="timeline-canvas"></canvas></div>
 
@@ -688,49 +704,53 @@ function addDeposit(x, y, amt) {
 // ─────────────────────────────────────────────
 // SOLID MASK
 // ─────────────────────────────────────────────
+// Every flow cell an object covers (its centre inside the object), as fn(idx, i, j). The solid
+// mask is built with it, and a model can use it for what it keeps per object (the river's
+// tops). Cells can come twice for a polygon that folds over itself.
+function obstacleCells(ob, fn) {
+  if (ob.type === 'poly') {
+    let a = ob.rotation * PI / 180, cosA = cos(a), sinA = sin(a);
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (let p of ob.points) {
+      let wx = ob.x + p.x * cosA - p.y * sinA, wy = ob.y + p.x * sinA + p.y * cosA;
+      if (wx < minX) minX = wx; if (wx > maxX) maxX = wx; if (wy < minY) minY = wy; if (wy > maxY) maxY = wy;
+    }
+    let i0 = max(1, floor(minX / cellW)), i1 = min(NX, ceil(maxX / cellW));
+    let j0 = max(1, floor(minY / cellH)), j1 = min(NY, ceil(maxY / cellH));
+    for (let j = j0; j <= j1; j++)
+      for (let i = i0; i <= i1; i++) {
+        let lp = polyToLocal(ob, i * cellW, j * cellH);
+        if (pointInPoly(lp.x, lp.y, ob.points)) fn(IX(i, j), i, j);
+      }
+    return;
+  }
+  let hw = obW(ob) / 2, hh = obH(ob) / 2;
+  let rg = max(hw, hh) / ((cellW + cellH) / 2);
+  let cx = ob.x / cellW, cy = ob.y / cellH;
+  let i0 = max(1, floor(cx - rg - 1)), i1 = min(NX, ceil(cx + rg + 1));
+  let j0 = max(1, floor(cy - rg - 1)), j1 = min(NY, ceil(cy + rg + 1));
+  let cosA = cos(-ob.rotation * PI / 180), sinA = sin(-ob.rotation * PI / 180);
+  for (let j = j0; j <= j1; j++)
+    for (let i = i0; i <= i1; i++) {
+      let wx = i * cellW - ob.x, wy = j * cellH - ob.y;
+      if (ob.type === 'circle') { if (wx * wx + wy * wy <= hw * hw) fn(IX(i, j), i, j); }
+      else {
+        let rx = wx * cosA - wy * sinA, ry = wx * sinA + wy * cosA;
+        if (abs(rx) <= hw && abs(ry) <= hh) fn(IX(i, j), i, j);
+      }
+    }
+}
+
+// An object the flow passes through or over (the coast's sand, a submerged sill) is not solid:
+// the model says so with isSolid(ob). Grains pass it too.
+function obIsSolid(ob) { return !(model && model.isSolid && !model.isSolid(ob)); }
+
 function buildSolidMask() {
   solid.fill(0);
   for (let ob of obstacles) {
     if (!isObstacleActive(ob)) continue;
-    if (model && model.isSolid && !model.isSolid(ob)) continue;   // an object the flow passes through (sand, not concrete)
-    if (ob.type === 'poly') {
-      let a = ob.rotation * PI / 180, cosA = cos(a), sinA = sin(a);
-      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-      for (let p of ob.points) {
-        let wx = ob.x + p.x * cosA - p.y * sinA, wy = ob.y + p.x * sinA + p.y * cosA;
-        if (wx < minX) minX = wx; if (wx > maxX) maxX = wx; if (wy < minY) minY = wy; if (wy > maxY) maxY = wy;
-      }
-      let i0 = max(1, floor(minX / cellW)), i1 = min(NX, ceil(maxX / cellW));
-      let j0 = max(1, floor(minY / cellH)), j1 = min(NY, ceil(maxY / cellH));
-      for (let j = j0; j <= j1; j++) {
-        for (let i = i0; i <= i1; i++) {
-          let idx = IX(i, j);
-          if (solid[idx]) continue;
-          let lp = polyToLocal(ob, i * cellW, j * cellH);
-          if (pointInPoly(lp.x, lp.y, ob.points)) solid[idx] = 1;
-        }
-      }
-      continue;
-    }
-    let hw = obW(ob) / 2, hh = obH(ob) / 2;
-    let rg = max(hw, hh) / ((cellW + cellH) / 2);
-    let cx = ob.x / cellW, cy = ob.y / cellH;
-    let i0 = max(1, floor(cx - rg - 1)), i1 = min(NX, ceil(cx + rg + 1));
-    let j0 = max(1, floor(cy - rg - 1)), j1 = min(NY, ceil(cy + rg + 1));
-    for (let j = j0; j <= j1; j++) {
-      for (let i = i0; i <= i1; i++) {
-        let idx = IX(i, j);
-        if (solid[idx]) continue;
-        let wx = i * cellW - ob.x, wy = j * cellH - ob.y;
-        if (ob.type === 'circle') {
-          if (wx * wx + wy * wy <= (obW(ob)/2) * (obW(ob)/2)) solid[idx] = 1;
-        } else {
-          let cosA = cos(-ob.rotation * PI / 180), sinA = sin(-ob.rotation * PI / 180);
-          let rx = wx * cosA - wy * sinA, ry = wx * sinA + wy * cosA;
-          if (abs(rx) <= hw && abs(ry) <= hh) solid[idx] = 1;
-        }
-      }
-    }
+    if (!obIsSolid(ob)) continue;   // an object the flow passes through (sand, not concrete)
+    obstacleCells(ob, (idx) => { solid[idx] = 1; });
   }
 }
 
@@ -801,7 +821,7 @@ function isObstacleActive(ob) {
 
 function isInsideObstacle(px, py) {
   for (let ob of obstacles) {
-    if (!isObstacleActive(ob)) continue;
+    if (!isObstacleActive(ob) || !obIsSolid(ob)) continue;
     if (ob.type === 'poly') { let lp = polyToLocal(ob, px, py); if (pointInPoly(lp.x, lp.y, ob.points)) return true; continue; }
     let dx = px - ob.x, dy = py - ob.y;
     if (ob.type === 'circle') {
@@ -897,7 +917,7 @@ function updateParticles() {
     let hitObstacle = false;
     if (isInsideObstacle(p.x, p.y) && !passableAt(p.x, p.y)) {
       for (let ob of obstacles) {
-        if (!isObstacleActive(ob)) continue;
+        if (!isObstacleActive(ob) || !obIsSolid(ob)) continue;
         let dx = p.x - ob.x, dy = p.y - ob.y, nx = 0, ny = 0, pen = 0;
         if (ob.type === 'circle') {
           let r = obW(ob) / 2, d = Math.sqrt(dx * dx + dy * dy);
@@ -1691,6 +1711,7 @@ function setup() {
   solid = new Uint8Array(SIZE);
   if (!model) throw new Error('no model registered: index.html needs a model.js next to it');
   mountModel();
+  wireObjectHeightPanel();
   if (model.init) model.init();
 
   depoBuffer = createGraphics(width, height);
@@ -1925,6 +1946,7 @@ function draw() {
   backendFrame();
   drawZoomMap();
   updateHUD();
+  updateObjectHeightPanel();
 }
 
 function windowResized() {
@@ -1973,6 +1995,54 @@ function windowResized() {
 // ─────────────────────────────────────────────
 function obW(ob) { return (ob.w != null) ? ob.w : ob.size; }
 function obH(ob) { return (ob.h != null) ? ob.h : ob.size; }
+
+// An object's top, in the model's own terms (model.objectHeight: the river measures it from
+// the water surface, the coast from mean sea level), or null where the model gives objects
+// no height. Objects saved before heights existed have none and take the model's default.
+function obHasHeight(ob) { const oh = model && model.objectHeight; return !!(oh && (!oh.applies || oh.applies(ob))); }
+function obTop(ob) {
+  if (!obHasHeight(ob)) return null;
+  return (ob.top != null && Number.isFinite(ob.top)) ? ob.top : model.objectHeight.default;
+}
+
+// The height panel: shown beside the selected object while it is selected, for a model whose
+// objects have a height. Dragging it changes that object's top.
+let obHeightFor = -2;
+function updateObjectHeightPanel() {
+  const el = document.getElementById('ob-height');
+  if (!el) return;
+  const ob = selectedIdx >= 0 ? obstacles[selectedIdx] : null;
+  const show = !!(ob && obHasHeight(ob) && !bedMode && !(typeof guide !== 'undefined' && guide.open));
+  el.style.display = show ? 'block' : 'none';
+  if (!show) { obHeightFor = -2; return; }
+  const oh = model.objectHeight, sl = document.getElementById('ob-height-slider'), top = obTop(ob);
+  if (obHeightFor !== selectedIdx) {
+    sl.min = oh.min; sl.max = oh.max; sl.step = oh.step; sl.value = top;
+    obHeightFor = selectedIdx;
+  }
+  document.getElementById('ob-height-val').textContent = oh.label(top);
+  document.getElementById('ob-height-note').textContent = oh.note ? oh.note(top, ob) : '';
+  // Below the object on screen, kept on the canvas.
+  const cv = drawingContext && drawingContext.canvas;
+  const r = cv && cv.getBoundingClientRect ? cv.getBoundingClientRect() : { left: 0, top: 0, right: width, bottom: height };
+  const ext = Math.max(obW(ob) || 0, obH(ob) || 0, 40) / 2;
+  const sx = r.left + (ob.x - viewX) * viewZ, sy = r.top + (ob.y + ext - viewY) * viewZ + 10;
+  const w = el.offsetWidth || 190, h = el.offsetHeight || 60;
+  let left = Math.min(r.right - w - 6, Math.max(r.left + 6, sx - w / 2));
+  let topPx = sy + h > r.bottom - 6 ? r.top + (ob.y - ext - viewY) * viewZ - h - 10 : sy;
+  el.style.left = left + 'px'; el.style.top = Math.max(r.top + 6, topPx) + 'px';
+}
+function wireObjectHeightPanel() {
+  const sl = document.getElementById('ob-height-slider');
+  if (!sl) return;
+  sl.addEventListener('input', function () {
+    const ob = selectedIdx >= 0 ? obstacles[selectedIdx] : null;
+    if (!ob || !obHasHeight(ob)) return;
+    ob.top = parseFloat(this.value);
+    solidMaskDirty = true;
+    updateObjectHeightPanel();
+  });
+}
 
 function pointInPoly(px, py, pts) {
   let inside = false;
@@ -2102,23 +2172,27 @@ function addObstacle(x, y, type, rot) {
   // A model can have object kinds of its own (the coast: a nourishment). It builds them.
   if (model && model.makeObstacle) {
     const made = model.makeObstacle(type, x, y, rot);
-    if (made) { obstacles.push(made); selectedIdx = obstacles.length - 1; solidMaskDirty = true; return; }
+    if (made) { if (obHasHeight(made) && made.top == null) made.top = model.objectHeight.default; obstacles.push(made); selectedIdx = obstacles.length - 1; solidMaskDirty = true; return; }
   }
   solidMaskDirty = true;
-  obstacles.push({ type, x, y, w: ghostSize, h: ghostSize, rotation: rot||0, clips: [{ start: 0, dur: Infinity }] });
+  const ob = { type, x, y, w: ghostSize, h: ghostSize, rotation: rot||0, clips: [{ start: 0, dur: Infinity }] };
+  if (obHasHeight(ob)) ob.top = model.objectHeight.default;
+  obstacles.push(ob);
 }
 
 function addPolyObstacle(pts) {
   let c = polyCentroid(pts);
   solidMaskDirty = true;
-  obstacles.push({ type: 'poly', x: c.x, y: c.y, rotation: 0, points: pts.map(p => ({ x: p.x - c.x, y: p.y - c.y })), clips: [{ start: 0, dur: Infinity }] });
+  const ob = { type: 'poly', x: c.x, y: c.y, rotation: 0, points: pts.map(p => ({ x: p.x - c.x, y: p.y - c.y })), clips: [{ start: 0, dur: Infinity }] };
+  if (obHasHeight(ob)) ob.top = model.objectHeight.default;
+  obstacles.push(ob);
 }
 
 function deleteObstacle(idx) { if (idx>=0&&idx<obstacles.length) { obstacles.splice(idx,1); solidMaskDirty = true; } }
 
 function mousePressed(event) {
   if (guide.open) return;      // the guide explains the canvas; it does not let a click through
-  if (event && event.target) { let t=event.target; if (t.closest('#sidebar')||t.tagName==='BUTTON'||t.id==='bed-thumb'||t.id==='timeline-canvas') return; }
+  if (event && event.target) { let t=event.target; if (t.closest('#sidebar')||t.closest('#ob-height')||t.tagName==='BUTTON'||t.id==='bed-thumb'||t.id==='timeline-canvas') return; }
   if (mouseX<0||mouseX>width||mouseY<0||mouseY>height) return;
   if ((event && event.button === 1) || mouseButton === CENTER || panDrag) return;   // a pan, not a click (canvasMouseDown)
   updatePointer();
@@ -2193,6 +2267,7 @@ function mousePressed(event) {
 function mouseDragged(event) {
   if (guide.open) return;
   if (panDrag) return;
+  if (event && event.target && event.target.closest && event.target.closest('#ob-height')) return;   // the height slider
   updatePointer();
   if (!bedMode && model.pointer && model.pointer('drag', wmX, wmY, event)) return;
   if (event&&event.target) { let t=event.target; if(t.closest('#sidebar')||t.id==='bed-thumb'||t.id==='timeline-canvas') return; }
@@ -2742,6 +2817,11 @@ function updateTimelineVisibility() {
 //                                     // compare with their thresholds (default 1)
 //     passable                        // null, or a flow-grid array: 1 where water crosses an
 //                                     // obstacle's cell (a spilling dam); grains go through
+//     objectHeight: { default, min, max, step, label(top), note(top, ob), applies(ob) }
+//                                     // objects have a top (ob.top, in the model's terms); a
+//                                     // slider for it comes up beside the selected object.
+//                                     // obTop(ob) reads it, with the default for old scenes
+//                                     // (obstacleCells(ob, fn) lists an object's flow cells)
 //   });
 //
 // The contract between the two is the flow grid: NX x NY cells plus a one-cell border,
@@ -3062,6 +3142,7 @@ function sceneState() {
     obstacles: obstacles.map(o => ({
       type: o.type, x: o.x, y: o.y, w: o.w, h: o.h, rotation: o.rotation,
       points: (o.points && o.type === 'poly') ? o.points.map(p => ({ x: p.x, y: p.y })) : undefined,
+      top: obTop(o) == null ? undefined : obTop(o),
     })),
     width, height,
     bed_profile: bedPoints, bed_xsections: bedXSections,

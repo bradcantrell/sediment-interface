@@ -1343,6 +1343,37 @@ try {
         `out to 1x ${out}; 0 resets ${key0}; bed editor resets ${bedReset}, no zoom in it ${bedNoZoom}; markup ${markup}`);
 }
 
+// ---------------------------------------------------------------- 9g. object heights
+// A model whose objects have a height (model.objectHeight) gets a slider beside the selected
+// object (Brad, 2026-11-18). It sets that object's top, the scene keeps it, an object from
+// before heights existed reads as the default. At the slider's lowest top the object is under
+// the water, not solid, and lets the grains through; at its highest it is solid and stops them.
+if (app.run("!!(model.objectHeight)")) {
+  const el = (id) => app.run(`document.getElementById('${id}')`);
+  const keep = app.run("JSON.stringify(obstacles)"), keepSel = app.run("selectedIdx");
+  const oh = app.run("model.objectHeight");
+  app.run(`obstacles = [{ type: 'rect', x: width * 0.5, y: height * 0.5, w: 60, h: 60, rotation: 0, clips: [{ start: 0, dur: Infinity }] }]; selectedIdx = -1; solidMaskDirty = false; updateObjectHeightPanel()`);
+  const hidden = el("ob-height").style.display === "none";
+  const legacy = app.run("obTop(obstacles[0])");
+  app.run("selectedIdx = 0; updateObjectHeightPanel()");
+  const shown = el("ob-height").style.display === "block" && el("ob-height-val").textContent === oh.label(oh.default);
+  const sl = el("ob-height-slider"), want = oh.min + oh.step * 2;
+  sl.value = String(want); sl.dispatchEvent({ type: "input" });
+  const set = app.run("[obstacles[0].top, solidMaskDirty]");
+  const scene = app.run("sceneState().obstacles[0].top");
+  // Lowest top and highest: does the model make it solid at each, and do grains pass when not?
+  const solidAt = (t) => app.run(`obstacles[0].top = ${t}; buildSolidMask(); [obIsSolid(obstacles[0]), isInsideObstacle(width * 0.5, height * 0.5)]`);
+  const lo = solidAt(oh.min), hi = solidAt(oh.max);
+  app.run("selectedIdx = -1; updateObjectHeightPanel()");
+  const gone = el("ob-height").style.display === "none";
+  app.run(`obstacles = ${keep}; selectedIdx = ${keepSel}; solidMaskDirty = true`);
+  check(hidden && legacy === oh.default && shown && Math.abs(set[0] - want) < 1e-9 && set[1] === true && Math.abs(scene - want) < 1e-9 &&
+        lo[0] === false && lo[1] === false && hi[0] === true && hi[1] === true && gone,
+        "the height slider comes up beside the selected object, sets its top, and the scene keeps it",
+        `hidden with nothing selected ${hidden}; an object with no top reads ${legacy} (default ${oh.default}); shown ${shown}; slider to ${want} -> top ${set[0]}, mask dirty ${set[1]}; scene ${scene}; ` +
+        `at the lowest top solid ${lo[0]}, grains stopped ${lo[1]}; at the highest solid ${hi[0]}, stopped ${hi[1]}; hidden again ${gone}`);
+}
+
 // ---------------------------------------------------------------- 10. the site's own checks
 {
   const siteChecks = path.join(ROOT, "dev", "site_checks.js");

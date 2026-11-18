@@ -138,13 +138,14 @@ const WATER_DEPTH_PX = 640;
 const BED_RELIEF_MAX_PX = 160;
 let depthGrid = null, depthDirty = true;
 let depthVersion = 0;                      // counts rebuilds, so the solver knows its face depths are stale
+const MIN_DEPTH = 0.05;                    // the shallowest water over a submerged object (10 cm)
 
 function rebuildDepthGrid() {
   depthDirty = false;
   depthVersion++;
   let hasDepo = false;
   if (depoGrid) { for (let k = 0; k < depoGrid.length; k++) { if (depoGrid[k] > 0) { hasDepo = true; break; } } }
-  if (bedPoints.length < 2 && !hasDepo) { depthGrid = null; return; }
+  if (bedPoints.length < 2 && !hasDepo && !objHasSub) { depthGrid = null; return; }
   if (!depthGrid) depthGrid = new Float32Array(SIZE);
   let qx = cellW / 4, qy = cellH / 4;
   for (let j = 0; j <= NY + 1; j++) {
@@ -154,8 +155,11 @@ function rebuildDepthGrid() {
       let z = Math.min(BED_RELIEF_MAX_PX, Math.max(0, computeUserBedZ(x, y)));
       // Deposit is stored on a finer grid than the flow and is spiky particle by particle.
       // Average it over the flow cell so one grain does not put a step in the depth.
+      // A submerged object is bed as high as its top; deposit settles on whichever is higher.
+      let c = IX(i, j), sub = objHasSub ? objSub[IX(Math.min(NX, Math.max(1, i)), Math.min(NY, Math.max(1, j)))] * WATER_DEPTH_PX : 0;
+      if (sub > z) z = sub;
       if (hasDepo) z += 0.25 * (depoZ(x - qx, y - qy) + depoZ(x + qx, y - qy) + depoZ(x - qx, y + qy) + depoZ(x + qx, y + qy));
-      depthGrid[IX(i, j)] = 1 - z / WATER_DEPTH_PX;
+      depthGrid[c] = Math.max(MIN_DEPTH, 1 - z / WATER_DEPTH_PX);
     }
   }
 }
@@ -224,16 +228,50 @@ const MAC_ADV = 4 * DT;
 // channel (b = NY) it is a side-wall drag of about 0.2% per step, which the solve gives back.
 // (A let, so a check can switch it off and see what it does.)
 let K_OPEN = 0.25;
-// Overtopping. In this rigid-lid model water cannot pile up, except behind an obstacle that
-// blocks the whole channel: there the inflow is stored as a pond whose level rises. Walls
-// stand WALL_FREEBOARD above the river's surface (0.25 of the depth, 0.5 m in the 2 m channel,
-// the most bed the editor draws). Sediment settling in the pond takes up room too and lifts
-// the water the same way. Once the level passes the crest the wall spills, as a broad-crested
-// weir, q = WEIR_C * H^1.5 per unit width, H the level above the crest. WEIR_C is the textbook
-// 1.705 m^0.5/s, in this model's units (depth 1 = 2 m, speeds in m/s, as the OpenFOAM export
-// reads them): 1.705 * 2^1.5 / 2 = 2.41. The wall's cells then carry water H deep.
-const WALL_FREEBOARD = 0.25;
+// Object heights. Every object has a top (ob.top, metres above the water surface, set with the
+// slider that comes up beside a selected object; obTop() gives OBJECT_TOP_M to objects from
+// before 2026-11-18). One with its top under the water is not solid: it is raised bed, which
+// the water and the grains pass over (riverObjects(), rebuildDepthGrid()). One standing above
+// it is a wall.
+//
+// Overtopping. In this rigid-lid model water cannot pile up, except behind walls that block
+// the whole channel: there the inflow is stored as a pond whose level rises. Sediment settling
+// in the pond takes up room too and lifts the water the same way. Once the level passes a
+// wall's top (its freeboard, mac.fb, in depth units) the wall spills there, as a broad-crested
+// weir, q = WEIR_C * H^1.5 per unit width, H the level above that crest. WEIR_C is the
+// textbook 1.705 m^0.5/s, in this model's units (depth 1 = 2 m, speeds in m/s, as the OpenFOAM
+// export reads them): 1.705 * 2^1.5 / 2 = 2.41. The wall's cells then carry water H deep, so
+// the lowest wall of a blockage spills first.
+const WATER_DEPTH_M = 2.0;
+const OBJECT_TOP_M = 0.5;          // the default top: half a metre above the water
+const WALL_FREEBOARD = OBJECT_TOP_M / WATER_DEPTH_M;   // the default's freeboard, in depth units
 const WEIR_C = 2.41;
+
+// Per flow cell, from the active objects: fb, the freeboard of a wall's cell (depth units,
+// the tallest object there), and subTop, the top of submerged objects as a fraction of the
+// depth above the channel floor (0 where there is none). Rebuilt when the objects change.
+let objFb = null, objSub = null, objSig = '', objHasSub = false;
+function riverObjects() {
+  if (!objFb || objFb.length !== SIZE) { objFb = new Float32Array(SIZE); objSub = new Float32Array(SIZE); objSig = null; }
+  const act = obstacles.filter(isObstacleActive);
+  const sig = JSON.stringify(act.map(o => [o.type, o.x, o.y, o.w, o.h, o.size, o.rotation, obTop(o), o.points]));
+  if (sig === objSig) return false;
+  objSig = sig;
+  const sub0 = objSub.slice();
+  objFb.fill(0); objSub.fill(0); objHasSub = false;
+  for (const ob of act) {
+    const top = obTop(ob);
+    if (top > 0) { const fb = top / WATER_DEPTH_M; obstacleCells(ob, (c) => { if (fb > objFb[c]) objFb[c] = fb; }); }
+    else {
+      const z = Math.max(0, 1 + top / WATER_DEPTH_M);
+      obstacleCells(ob, (c) => { if (z > objSub[c]) objSub[c] = z; });
+      objHasSub = true;
+    }
+  }
+  for (let c = 0; c < SIZE; c++) if (objSub[c] !== sub0[c]) { depthDirty = true; break; }
+  if (mac) mac.fbVersion = (mac.fbVersion || 0) + 1;
+  return true;
+}
 let mac = null;
 let macStats = { iters: 0, residual: 0, active: 0 };
 
@@ -252,18 +290,20 @@ function macAlloc() {
     uLast: new Float32Array(SIZE), vLast: new Float32Array(SIZE),
     // The pond behind a full blockage (see macPond()).
     pond: new Uint8Array(SIZE), crest: new Uint8Array(SIZE), pondCells: new Int32Array(NX * NY),
-    nPond: 0, weirWidth: 0, h0: new Float32Array(SIZE),
+    nPond: 0, weirWidth: 0, weirFb: new Float32Array(4 * NX * NY), h0: new Float32Array(SIZE), fbSeen: -1, fbVersion: 0,
     store: 0, level: 0, head: 0, headBuilt: 0, spilling: false, qIn: 0, qSpill: 0,
   };
 }
 
-function macWet(c) { return !solid[c] || (mac.spilling && mac.crest[c]); }
+// The freeboard of a wall's cell (the default for a cell no object has claimed yet).
+function cellFb(c) { return objFb && objFb[c] > 0 ? objFb[c] : WALL_FREEBOARD; }
+function macWet(c) { return !solid[c] || (mac.spilling && mac.crest[c] && mac.level > cellFb(c) + 1e-4); }
 
 // The pond: water reached from the inflow but not connected to the outflow through water,
 // and the crest: the solid cells of every obstacle that touches it. Found when the mask
 // changes. weirWidth is the number of faces between the pond and its crest (the crest's
-// length, in cells). The stored volume is kept while a pond stays; it goes when the
-// blockage does.
+// length, in cells), and weirFb the freeboard of the wall on each. The stored volume is kept
+// while a pond stays; it goes when the blockage does.
 function macPond() {
   const M = mac, W = NX + 2, { pond, crest } = M;
   const reach = new Uint8Array(SIZE), out = new Uint8Array(SIZE), stack = [];
@@ -292,7 +332,7 @@ function macPond() {
     for (const d of [c-1, c+1, c-W, c+W]) {
       let i = d % W, j = (d - i) / W;
       if (i < 1 || i > NX || j < 1 || j > NY || !solid[d]) continue;
-      M.weirWidth++;
+      M.weirFb[M.weirWidth++] = cellFb(d);
       if (!crest[d]) { crest[d] = 1; stack.push(d); }
     }
   }
@@ -315,10 +355,15 @@ function macPondStep(qIn) {
   let sed = 0;
   for (let k = 0; k < n; k++) { let c = M.pondCells[k]; sed += M.h0[c] - (depthGrid ? depthGrid[c] : 1); }
   M.qIn = qIn;
-  M.qSpill = M.head > 0 ? WEIR_C * M.weirWidth * Math.pow(M.head, 1.5) : 0;
+  // Each face of the crest spills by its own wall's height.
+  let q = 0;
+  for (let f = 0; f < M.weirWidth; f++) { const h = M.level - M.weirFb[f]; if (h > 0) q += Math.pow(h, 1.5); }
+  M.qSpill = M.head > 0 ? WEIR_C * q : 0;
   M.store = Math.max(0, M.store + (qIn - M.qSpill) * MAC_ADV);
   M.level = (M.store + Math.max(0, sed)) / n;
-  M.head = Math.max(0, M.level - WALL_FREEBOARD);
+  let low = Infinity;
+  for (let f = 0; f < M.weirWidth; f++) if (M.weirFb[f] < low) low = M.weirFb[f];
+  M.head = Math.max(0, M.level - low);   // over the lowest crest
   if (M.head > 1e-4 && M.weirWidth > 0) {
     if (!M.spilling) { M.spilling = true; M.headBuilt = 0; }
   } else if (M.spilling) { M.spilling = false; M.headBuilt = 0; }
@@ -330,10 +375,10 @@ function macPondStep(qIn) {
 // whenever the depth over its crest has moved by more than 2%.
 function macRebuild() {
   const M = mac, H = depthGrid, W = NX + 2;
-  M.depthSeen = depthVersion; M.built = true; M.headBuilt = M.spilling ? M.head : 0;
+  M.depthSeen = depthVersion; M.built = true; M.headBuilt = M.spilling ? M.head : 0; M.fbSeen = M.fbVersion;
   const { openU, openV, hU, hV, active } = M;
-  const crestH = M.spilling ? Math.min(1, M.head) : 0;
-  const hCell = (c) => (solid[c] ? crestH : (H ? H[c] : 1));
+  // Over a crest the water stands as deep as the level is above that wall's top.
+  const hCell = (c) => (solid[c] ? (M.spilling ? Math.min(1, Math.max(0, M.level - cellFb(c))) : 0) : (H ? H[c] : 1));
   // Face depth: the mean of its two cells, or over a crest the depth on the crest (the
   // control of a weir is the water on its crest, not the pond behind it).
   const hFace = (a, b) => (solid[a] || solid[b]) ? Math.min(hCell(a), hCell(b)) : 0.5 * (hCell(a) + hCell(b));
@@ -614,6 +659,7 @@ function macDrag() {
 }
 
 function velocityStep() {
+  const objChanged = riverObjects();   // a top or a submerged object may have changed the depth
   if (depthDirty) rebuildDepthGrid();
   if (!mac) macAlloc();
   const M = mac, W = NX + 2;
@@ -621,14 +667,14 @@ function velocityStep() {
   // The mask (an object placed, moved, timed in or out) or the depth changed.
   let maskChanged = !M.built;
   if (!maskChanged) for (let c = 0; c < SIZE; c++) if (solid[c] !== M.solidSeen[c]) { maskChanged = true; break; }
-  if (maskChanged) { M.solidSeen.set(solid); macPond(); }
+  if (maskChanged || objChanged) { M.solidSeen.set(solid); macPond(); }
   // A pond fills with the inflow it holds back.
   if (M.nPond) {
     let qIn = 0;
     for (let j = 1; j <= NY; j++) { let c = IX(1, j); if (M.pond[c]) qIn += inflowVel * (depthGrid ? depthGrid[c] : 1); }
     macPondStep(qIn);
   }
-  let rebuilt = maskChanged || M.depthSeen !== depthVersion
+  let rebuilt = maskChanged || M.depthSeen !== depthVersion || M.fbSeen !== M.fbVersion
              || (M.spilling ? Math.abs(M.head - M.headBuilt) > 0.02 * M.head : M.headBuilt !== 0);
   if (rebuilt) macRebuild();
   const { openU, openV, hU, hV } = M;
@@ -787,7 +833,8 @@ registerModel({
        <p>Use it to ask what a change in the channel does downstream. A bar that forms below a bridge pier, a pool that scours where the flow is pinched, sediment that drops out in the slack water behind a planted island.</p>` },
     { id: 'river-objects', after: 'draw', target: guideCanvas, title: 'What an object does', text:
       `<p>Then watch. Sediment usually piles up in the slow water behind an object and gets scoured away beside it, where the water squeezes past.</p>
-       <p>A wall across the whole river is a dam. The water backs up behind it until the pond reaches the top of the wall, and then it spills over and carries sediment with it. Sand settling in the pond raises its floor, so it fills and spills sooner.</p>` },
+       <p>Select an object and a height slider comes up beside it. Put its top under the water and it becomes a sill or a sunken rock, and the river flows over it. Put it above the water and it is a wall.</p>
+       <p>A wall across the whole river is a dam. The water backs up behind it until the pond reaches the top of the wall, and then the water spills over the top and carries sediment with it. The lowest part of the wall spills first. Sand settling in the pond raises the pond floor, so the pond fills and spills sooner.</p>` },
     { id: 'river-physics', after: 'thumb', target: guideSection('reset-physics', 'erosion-prob'), title: 'Physics', text:
       `<p>These change how the river behaves. <b>inflow</b> is how fast the water comes in. Faster water carries sediment farther and scours harder. <b>friction</b> is how rough the riverbed is. Rough ground slows the water near the bed, so more settles and less is lifted. The river still carries all of its water, but less of it runs over rough or shallow ground.</p>
        <p><b>settle thresh</b> is the speed below which a grain can settle, and <b>settle prob</b> is how likely it is to settle each moment once it is that slow. <b>erode thresh</b> is the speed above which the water can lift a deposit again, and <b>erode prob</b> is how likely that is. Together they decide where the ground builds and where it wears.</p>
@@ -856,6 +903,15 @@ registerModel({
   // Flow cells an obstacle holds but water crosses: the crest of a spilling dam. The interface
   // lets grains through them and reads their speed. Null when nothing spills.
   get passable() { return mac && mac.spilling ? mac.crest : null; },
+
+  // Every object has a top, metres above the water, set with the slider beside the selected
+  // object. Under the water it is a sill the river flows over; above it, a wall.
+  objectHeight: {
+    default: OBJECT_TOP_M, min: -1.9, max: 1.5, step: 0.05,
+    label: (t) => Math.abs(t) < 0.005 ? 'level with the water' : (t > 0 ? `${t.toFixed(2)} m above the water` : `${(-t).toFixed(2)} m under the water`),
+    note: (t) => t > 0 ? 'A wall. Across the whole river it makes a dam.' : 'Under the water. The river and its sand pass over it.',
+  },
+  isSolid(ob) { return obTop(ob) > 0; },
 
   // The drawn bed or the deposit changed: the flow depth has to be rebuilt.
   bedChanged() { depthDirty = true; },

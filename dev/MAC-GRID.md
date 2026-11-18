@@ -274,12 +274,33 @@ of the flow closer and the speeds very slightly less close. Both do much better 
 2026-11-13 figures (RMS 15%, correlation 0.51), most of that from the case now being the
 scene.
 
+### Object heights (2026-11-18)
+
+Brad decided that every object gets a height, that a slider beside the selected object sets it, that the
+default stays 0.5 m above the water, and the coast's groynes work the same way.
+
+- The interface keeps `ob.top` per object, shows `#ob-height` beside the selected object for a
+  model that declares `objectHeight`, saves the top with the scene, and reads an object with
+  none as the default. An object the model calls not solid no longer stops grains.
+- The river measures the top from the water surface. Under it (down to 1.9 m under), the
+  object is not solid. It is raised bed in the depth grid, and the river flows over it with
+  all of its water. Over a sill half the depth high the speed doubles, as the depth ratio says.
+  Above the water it is a wall, and each wall's top is its crest in the dam
+  (`mac.fb`, `mac.weirFb`). At the lowest inflow, a dam of a 0.2 m and a 1.5 m wall spills over
+  the low one only and settles at the weir law's level for it (0.656 against 0.656). At the
+  default inflow the head it needs tops both.
+- The OpenFOAM export carves an object under the water to its height. One above it still goes
+  through the lid. OpenFOAM's lid is rigid too, so a dam there cannot spill.
+- The coast measures a structure's crest from datum. Above the live water level it is solid,
+  as before. Under it the waves pass, and in each of its cells it stops the share of the water
+  column below its crest. A groyne across the surf zone passes 0% of the drift at +0.5 m,
+  39% at -0.6 m, all of it buried, and 23% with a 1 m surge over a +0.5 m crest. The XBeach
+  export raises structures to their crests (it raised every one to 3 m above the water).
+
 ### Not done
 
 - The dam is a rigid lid with a storage term. The pond's level is one number. The water
   upstream does not slope toward the crest, and the pond is still until it spills.
-- An obstacle's height is the same for all of them (`WALL_FREEBOARD`). A low sill and a tall
-  dam need a height per object, which the interface does not have.
 
 ## Measurement scripts
 

@@ -4,7 +4,7 @@ A browser-based sediment-flow sandbox and **OpenFOAM case exporter**. Draw a bed
 
 ## What it does
 
-- **Real-time 2D flow.** A depth-averaged solver on a staggered grid, with sediment particles (deposition + erosion) and an aggrading bed. Water is conserved: all of it goes around an obstacle or through a gap. The bed is in the flow, so water speeds up over a drawn rise or a deposit and slows over a hollow. A wall across the whole river holds the water back until the pond reaches the top, then spills over.
+- **Real-time 2D flow.** A depth-averaged solver on a staggered grid, with sediment particles (deposition + erosion) and an aggrading bed. Water is conserved: all of it goes around an obstacle or through a gap. The bed is in the flow, so water speeds up over a drawn rise or a deposit and slows over a hollow. Every object has a height, set with a slider beside it when selected. Under the water it is a sill the river flows over. A wall across the whole river holds the water back until the pond reaches its top, then spills over.
 - **Bed profile editor** — draw a longitudinal profile and transverse cross-sections; the bed surface is carved into the exported mesh.
 - **Obstacle choreography** — place circles, rectangles, and freeform polygons, sequenced on a looping timeline.
 - **Zoom** — the mouse wheel zooms in on the pointer, up to 10x. The middle button pans, and so do Alt (Option) with a drag and the arrow keys. A thumbnail at the top left shows where you are and how far in. Shift and the wheel rotate the selected object; `0` zooms back out.

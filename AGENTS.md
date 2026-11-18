@@ -153,9 +153,9 @@ and the simulation was dead along with every listener attached after the throw.
 
 The harness loads the page the way a browser does (inline script, then `model.js`, then
 `site.js`, one scope), mocks p5 and the DOM, and asserts on model state rather than pixels.
-98 checks:
+114 checks:
 
-- **Interface** (`dev/headless_harness.js`, 57): `setup()` completes, the draw loop advances
+- **Interface** (`dev/headless_harness.js`, 76): `setup()` completes, the draw loop advances
   time, sediment moves, a transect edits the bed, every visible strip is clickable, the bed
   editor works through the real mouse handlers (bed mode restores the pause state, a click
   lands at the elevation under the pointer, drags stop at the range, a signed range goes
@@ -177,16 +177,17 @@ The harness loads the page the way a browser does (inline script, then `model.js
   grain takes back the same amount (`rules.depositAmount()`), the wheel scrolls the sidebar
   and over the canvas zooms (Shift turns an object), the zoom goes 1x to 10x about the pointer
   with clicks landing where they point, the middle button, Alt + drag and the
-  arrow keys pan inside the scene, the thumbnail shows the zoom, and 0 or the bed editor reset it, nothing goes non-finite.
-- **River model** (`dev/model_checks.js`, 24): the scene carries the inflow, sediment travels
+  arrow keys pan inside the scene, the thumbnail shows the zoom, and 0 or the bed editor reset it, the height slider comes up beside a selected object and sets its top, nothing goes non-finite.
+- **River model** (`dev/model_checks.js`, 26): the scene carries the inflow, sediment travels
   downstream, friction makes more of it settle over a drawn bed, the friction brush adds and
   subtracts, still water stays still, with the inflow shut the water comes to rest, the bed is
   in the flow (see below), and the staggered solver's own checks: a gap passes all the water,
   a dam holds the river until its pond reaches the crest and then spills, a slot loses head,
-  rough ground turns the water aside, and no face into a solid carries water.
-- **This site** (`dev/site_checks.js`, 3): the export backend mounts, the steps shown after an
-  export name only files the case contains, and the real case
-  generator builds a case from `sceneState()`.
+  rough ground turns the water aside, no face into a solid carries water, an object under
+  the water is a sill the river flows over, and a dam spills over its lowest wall.
+- **This site** (`dev/site_checks.js`, 12): the export backend mounts, the steps shown after an
+  export name only files the case contains, the real case generator builds a case from
+  `sceneState()` with the page's geometry and bed, and it carves each object to its top.
 
 Rules that have earned their place:
 
@@ -233,9 +234,14 @@ by a check. Do not undo them.
   lifting rules see, times `(1 + f)^-0.6`. At a fixed discharge and slope Manning's equation
   gives speed as n^-0.6, and friction f is read as raising n by 1 + f (a modelling choice).
   Slowing the grains themselves cut the supply and lowered the deposit as friction rose.
-- **A wall across the whole channel is a dam.** Its pond stores the inflow and settled sand
-  until the level passes `WALL_FREEBOARD`, then the wall spills as a weir (`WEIR_C`), and the
-  interface lets grains over the crest (`model.passable`).
+- **Every object has a top** (`ob.top`, metres above the water, the slider beside a selected
+  object, default `OBJECT_TOP_M` 0.5). Under the water it is not solid but raised bed in the
+  depth grid (`riverObjects()`, `objSub`), so the river and its grains pass over it. Above
+  the water it is a wall.
+- **Walls across the whole channel are a dam.** Its pond stores the inflow and settled sand
+  until the level passes a wall's top (`objFb`, per cell), then that wall spills as a weir
+  (`WEIR_C`), the lowest first, and the interface lets grains over the crest
+  (`model.passable`).
 - **The interface restarts a flow that goes non-finite** (`flowFinite()` after the spin-up
   and every step), calls the model's `restart()`, and says so in the HUD for a few seconds.
   R does the same, so a bad state never survives a restart.

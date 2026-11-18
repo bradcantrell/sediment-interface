@@ -129,6 +129,18 @@ module.exports = function ({ app, S, check, ROOT }) {
     const ref = gen.generateCase(Object.assign({}, base, { width: 1280, height: 577, obstacles: [] }));
     check(ref.meta.ny === 110 && near(ref.meta.domainH, 5.77, 1e-9) && /\(12\.8000 5\.7700 0\)/.test(file(ref, "system/blockMeshDict")),
           "the reference canvas still gives the 12.8 x 5.77 m, 200 x 110 cell case", `${ref.meta.domainW} x ${ref.meta.domainH} m, ${ref.meta.nx} x ${ref.meta.ny}`);
+
+    // Each object is carved to its own top (Brad, 2026-11-18): one under the water stops there,
+    // so OpenFOAM's water flows over it; one above it still goes through the lid. An object
+    // with no top (an older scene) goes through, as before.
+    const tops = gen.generateCase(Object.assign({}, base, { obstacles: [
+      { type: "circle", x: 300, y: 200, w: 50, h: 50, size: 50, rotation: 0, top: -1.2 },
+      { type: "rect", x: 600, y: 300, w: 80, h: 30, size: 80, rotation: 0, top: 0.5 },
+      { type: "rect", x: 900, y: 300, w: 80, h: 30, size: 80, rotation: 0 }] }));
+    const zTop = (i) => Math.max(...[...file(tops, `constant/triSurface/obstacle${i}.stl`).matchAll(/vertex\s+\S+\s+\S+\s+(\S+)/g)].map(m => +m[1]));
+    const z = [0, 1, 2].map(zTop);
+    check(near(z[0], 0.8, 1e-6) && near(z[1], 2.005, 1e-6) && near(z[2], 2.005, 1e-6),
+          "the export carves each object to its top", `tops -1.2 m, +0.5 m and none: highest point ${z.map(v => v.toFixed(3)).join(", ")} m in a 2 m channel`);
   }
 
   app.setObstacles([]);
