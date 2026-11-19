@@ -206,6 +206,10 @@ Rules that have earned their place:
   hash `u`, `v`, the particles and the deposit before and after. The split into
   interface and model (2026-11-13) was accepted on identical hashes at every checkpoint,
   not on the harness passing.
+- **WebKit (Safari's engine) has its own check**, `dev/webkit_check.js`, outside the harness:
+  both pages at desktop, iPhone and iPad sizes through Playwright (steps, a tap places an
+  object, the height slider, the river's dam, no page errors). How to run it here is in
+  `AGENTS.local.md`. First passed 2026-11-18 (33 of 33); real iOS Safari is still untested.
 - **Look at it in a browser before calling an interface change done.** Headless Chrome:
   `google-chrome --headless=new --screenshot=out.png file://.../index.html`.
   Layout is invisible to the harness.

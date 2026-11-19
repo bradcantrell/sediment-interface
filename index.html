@@ -35,6 +35,8 @@
     #tools .sep { width: 1px; background: rgba(255,255,255,0.12); margin: 2px 2px; }
     body.narrow #tools { display: flex; }
     @media (pointer: coarse) { #tools { display: flex; } }
+    /* A phone's width: one row of tools (at 390 px "1:1" used to wrap onto a second row). */
+    @media (max-width: 430px) { #tools { gap: 3px; } #tools button { min-width: 32px; padding: 0 3px; } }
     /* The key list is for a keyboard: on a touch screen or a narrow window the tool bar
        takes its place. */
     body.narrow #help { display: none; }
@@ -134,7 +136,19 @@
     }
     #ob-height .oh-row { display: flex; justify-content: space-between; margin-bottom: 4px; }
     #ob-height .oh-val { color: rgba(255,200,100,0.95); }
-    #ob-height input { width: 100%; margin: 0; }
+    #ob-height input[type="range"] {
+      width: 100%; margin: 6px 0 2px; -webkit-appearance: none; appearance: none;
+      height: 4px; background: rgba(255,255,255,0.18); border-radius: 2px; outline: none; cursor: ew-resize;
+    }
+    #ob-height input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none; width: 14px; height: 14px; border-radius: 50%;
+      background: rgba(255,200,100,0.9); cursor: ew-resize;
+    }
+    #ob-height input[type="range"]::-moz-range-thumb {
+      width: 14px; height: 14px; border: none; border-radius: 50%; background: rgba(255,200,100,0.9);
+    }
+    body.narrow #ob-height input[type="range"]::-webkit-slider-thumb { width: 22px; height: 22px; }   /* a finger, not a pointer */
+    body.narrow #ob-height input[type="range"] { margin: 12px 0 10px; }
     #ob-height .oh-note { margin-top: 3px; color: rgba(255,255,255,0.45); white-space: normal; }
     /* The zoom thumbnail, top left, shown only while zoomed in. */
     #zoom-box {
@@ -1233,14 +1247,19 @@ function drawObstacles() {
     let ob = obstacles[i];
     if (!isObstacleActive(ob)) continue;
 
+    // An object under the water (a sill, a sunken groyne) is drawn dashed.
+    const sunk = obHasHeight(ob) && !obIsSolid(ob);
+    const dash = (on) => { if (drawingContext && drawingContext.setLineDash) drawingContext.setLineDash(on ? [6 * k, 4 * k] : []); };
     if (ob.type === 'poly') {
       push(); translate(ob.x, ob.y); rotate(ob.rotation*PI/180);
+      dash(sunk);
       if (i===selectedIdx) { stroke(255,255,255,220); strokeWeight(2.5*k); }
       else { stroke(255,255,255,140); strokeWeight(1.5*k); }
       noFill();
       beginShape();
       for (let p of ob.points) vertex(p.x, p.y);
       endShape(CLOSE);
+      dash(false);
       if (i===selectedIdx) {
         stroke(255,200,100,80); strokeWeight(4*k);
         beginShape(); for (let p of ob.points) vertex(p.x, p.y); endShape(CLOSE);
@@ -1256,7 +1275,9 @@ function drawObstacles() {
     noFill();
     if (i===selectedIdx) { stroke(255,255,255,220); strokeWeight(2.5*k); }
     else { stroke(255,255,255,140); strokeWeight(1.5*k); }
+    dash(sunk);
     if (ob.type==='circle') ellipse(0,0,obW(ob)); else { rectMode(CENTER); rect(0,0,obW(ob),obH(ob)); }
+    dash(false);
     if (i===selectedIdx) { stroke(255,200,100,80); strokeWeight(4*k); if(ob.type==='circle')ellipse(0,0,obW(ob)+6*k);else rect(0,0,obW(ob)+6*k,obH(ob)+6*k); }
     stroke(255,255,255,60); strokeWeight(0.5*k); line(-8*k,0,8*k,0); line(0,-8*k,0,8*k);
     pop();
