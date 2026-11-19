@@ -153,7 +153,7 @@ and the simulation was dead along with every listener attached after the throw.
 
 The harness loads the page the way a browser does (inline script, then `model.js`, then
 `site.js`, one scope), mocks p5 and the DOM, and asserts on model state rather than pixels.
-115 checks:
+116 checks:
 
 - **Interface** (`dev/headless_harness.js`, 76): `setup()` completes, the draw loop advances
   time, sediment moves, a transect edits the bed, every visible strip is clickable, the bed
@@ -178,8 +178,8 @@ The harness loads the page the way a browser does (inline script, then `model.js
   and over the canvas zooms (Shift turns an object), the zoom goes 1x to 10x about the pointer
   with clicks landing where they point, the middle button, Alt + drag and the
   arrow keys pan inside the scene, the thumbnail shows the zoom, and 0 or the bed editor reset it, the height slider comes up beside a selected object and sets its top, nothing goes non-finite.
-- **River model** (`dev/model_checks.js`, 27): the scene carries the inflow, sediment travels
-  downstream, sand settles behind an object and not beside it, friction makes more of it settle over a drawn bed, the friction brush adds and
+- **River model** (`dev/model_checks.js`, 28): the scene carries the inflow, sediment travels
+  downstream, sand settles behind an object and not beside it, the grains move smoothly, friction makes more of it settle over a drawn bed, the friction brush adds and
   subtracts, still water stays still, with the inflow shut the water comes to rest, the bed is
   in the flow (see below), and the staggered solver's own checks: a gap passes all the water,
   a dam holds the river until its pond reaches the crest and then spills, a slot loses head,
@@ -234,9 +234,10 @@ by a check. Do not undo them.
   (`DT * NX`) was 40 times that and copied a jet far downstream.
 - **All drag acts before the solve** (`macDrag()`), so none of it takes water out of the river.
   Bed friction is stronger in shallow water, and narrow openings lose head (`K_OPEN`).
-- **Grains spread with the turbulence** (`rules.spread`, `SPREAD_E`), a constant transverse
-  mixing rate carried as a smooth eddy velocity. Without it grains kept to their streamlines
-  and no sand settled behind an object.
+- **Grains spread with the turbulence** (`rules.spread`, `SPREAD_E` 0.01, `SPREAD_FRAMES`
+  60), a constant transverse mixing rate carried as an eddy velocity that lasts 60 frames.
+  Without it grains kept to their streamlines and no sand settled behind an object. Faster
+  or stronger (0.02, 10 frames, the first setting) shook the grains.
 - **Friction reaches the sediment through `rules.nearBed`**, the speed the settling and
   lifting rules see, times `(1 + f)^-0.6`. At a fixed discharge and slope Manning's equation
   gives speed as n^-0.6, and friction f is read as raising n by 1 + f (a modelling choice).

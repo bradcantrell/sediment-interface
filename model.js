@@ -793,7 +793,16 @@ function velocityStep() {
 // U * MAC_ADV cells, so its random step has sigma = sqrt(2 SPREAD_E h U MAC_ADV) cells, h in
 // cells. Without it a grain followed its streamline and almost none got into the slow water
 // behind an object.
-let SPREAD_E = 0.02;
+//
+// SPREAD_E = 0.01, about 0.17 u* h, near Fischer's straight-channel value. The interface
+// carries the walk as an eddy velocity that lasts SPREAD_FRAMES = 60 frames, about 360 px of
+// travel at the default inflow, two depths: eddies of the depth's size, which is what mixes a
+// river across. First shipped at 0.02 and 10 frames, which shook the grains: their step
+// turned nine times as much from frame to frame as with no spread (0.133 against 0.015 of the
+// step), and Brad saw it on the page. At 0.01 and 60 it turns 0.023, and 0.079 in slow water,
+// less than the 0.126 with none, and the box behind a circle still gets 264 against 16.
+let SPREAD_E = 0.01;
+let SPREAD_FRAMES = 60;
 function spread(p) {
   if (!(SPREAD_E > 0) || !(inflowVel > 0)) return 0;
   const hCells = WATER_DEPTH_M / (12.8 / (NX + 2));     // the export's 12.8 m reach over the grid
@@ -959,6 +968,7 @@ registerModel({
     bedSettleOnBed: BED_SETTLE_ON_BED,
     nearBed,
     spread,
+    get spreadFrames() { return SPREAD_FRAMES; },
   },
   spawnParticle, respawnParticle,
 

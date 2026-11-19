@@ -879,10 +879,11 @@ function settleParticle(p, bedHere) {
 // kick. A stationary AR(1) step v has variance sv^2, and the sum of its steps grows in
 // variance by sv^2 (1 + a) / (1 - a) a frame, so sv = sigma sqrt((1 - a) / (1 + a)) spreads as
 // a fresh step of sigma each frame would, and the kick that keeps v at sv is sqrt(1 - a^2).
-const SPREAD_FRAMES = 10;
-const SPREAD_KEEP = Math.exp(-1 / SPREAD_FRAMES);
-const SPREAD_KEEP_SCALE = Math.sqrt((1 - SPREAD_KEEP) / (1 + SPREAD_KEEP));
-const SPREAD_KICK = Math.sqrt(1 - SPREAD_KEEP * SPREAD_KEEP);
+// The lifetime is the model's (rules.spreadFrames), 10 frames by default.
+function spreadCoefs(frames) {
+  const a = Math.exp(-1 / Math.max(1, frames || 10));
+  return { keep: a, scale: Math.sqrt((1 - a) / (1 + a)), kick: Math.sqrt(1 - a * a) };
+}
 
 // A standard normal number from p5's random(), so a seeded run repeats (Box-Muller).
 function gaussRandom() {
@@ -941,7 +942,7 @@ function updateParticles() {
     p.y += p.vy * DT * 4;
     // Turbulent spreading: a model may give the grains a random walk of sigma px a frame
     // (rules.spread, the river's transverse mixing). It is carried as an eddy velocity that
-    // lasts about SPREAD_FRAMES frames (an Ornstein-Uhlenbeck process), scaled so that over
+    // lasts about rules.spreadFrames frames (an Ornstein-Uhlenbeck process), scaled so that over
     // longer times it spreads the grains exactly as far as a fresh step each frame would. A
     // fresh step each frame drew every streak as a zigzag. Reflected at the banks and at the
     // inflow edge, so it never carries a grain out through them (only the flow takes a grain
@@ -950,9 +951,9 @@ function updateParticles() {
     if (R.spread) {
       const sg = R.spread(p);
       if (sg > 0) {
-        const sv = sg * SPREAD_KEEP_SCALE;
-        p.tx = (p.tx || 0) * SPREAD_KEEP + sv * SPREAD_KICK * gaussRandom();
-        p.ty = (p.ty || 0) * SPREAD_KEEP + sv * SPREAD_KICK * gaussRandom();
+        const k = spreadCoefs(R.spreadFrames), sv = sg * k.scale;
+        p.tx = (p.tx || 0) * k.keep + sv * k.kick * gaussRandom();
+        p.ty = (p.ty || 0) * k.keep + sv * k.kick * gaussRandom();
         let nx = p.x + p.tx, ny = p.y + p.ty;
         if (nx < 0) { nx = -nx; p.tx = -p.tx; }
         if (ny < 0) { ny = -ny; p.ty = -p.ty; } else if (ny > height) { ny = 2 * height - ny; p.ty = -p.ty; }

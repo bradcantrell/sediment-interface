@@ -304,30 +304,31 @@ The staggered solver's wake is slow, but the grains followed their streamlines r
 object and almost none got into it.
 
 The river now gives the grains turbulent spreading (`rules.spread`, new optional interface
-hook). It is a transverse mixing rate eps = SPREAD_E U h, with SPREAD_E = 0.02, about a third
-of u* h (Fischer et al. 1979 give 0.15 u* h in a straight channel and 0.6 or more around
+hook). It is a transverse mixing rate eps = SPREAD_E U h with SPREAD_E = 0.01, about 0.17
+u* h (Fischer et al. 1979 give 0.15 u* h in a straight channel and 0.6 or more around
 obstacles). The rate is held constant over the reach, since one varying with the local speed
 would pile grains into slow water by itself. The interface carries it as an eddy velocity
-lasting about 10 frames, and the walk reflects at the banks and the inflow edge.
+that lasts `rules.spreadFrames` = 60 frames, about two depths of travel. The walk reflects at
+the banks and the inflow edge.
 
-3000 steps, inflow 2.5, in the scene of the retune above.
+The first version (0.02, 10 frames) shook the grains, and Brad saw it on the page. A grain's
+step turned 0.133 of its length from one frame to the next, against 0.015 with no spread
+(matched grain by grain, a plain channel). The second turns 0.023 (0.079 in slow water,
+against 0.126 with none). It puts less sand behind an object than the first, and still much
+more than none.
 
-| | Before | Now |
-|---|---|---|
-| Deposit behind the circle | 15 | 265 |
-| On its flanks | 0 | 0 |
-| No-bed scene, total | 1597 | 4612 (the collocated solver: 6322) |
-| Drawn bed, friction 0 | 6224 | 3783 |
-| Drawn bed, friction 3 | 69169 | 50373 |
+| | No spread | 0.02, 10 frames | 0.01, 60 frames |
+|---|---|---|---|
+| Step turning per frame | 0.015 | 0.133 | 0.023 |
+| Behind a lone circle, 1500 frames | 16 | 828 | 264 |
+| Its flanks | 0 | 0 | 0 |
+| Drawn bed, 3000 steps, friction 0 | 6224 | 3783 | 6411 |
+| Same, friction 3 | 69169 | 50373 | 74378 |
 
-Over a drawn bed a third less settles, and that third is the mixing keeping sand up.
-Counted over 1500 frames, settling and lifting both fell by 43%, and more grains aged out
-before they settled. The bank deposit rose (490 to 640), because grains the walk takes to a
-bank are reflected and kept, where before the flow's own noise lost some through it.
-
-The new check, "sand settles in the slow water behind an object, and not beside it", fails
-with `SPREAD_E = 0` (0 behind the circle after 1500 frames). The crest check now follows its
-one grain with the spread off, since one random step can outweigh a frame's drift.
+Two checks are new. "Sand settles in the slow water behind an object, and not beside it"
+fails with `SPREAD_E = 0`. "The grains move smoothly with the water" (limit 0.05) fails with
+the first setting (0.135). The crest check now follows its one grain with the spread off,
+since one random step can outweigh a frame's drift.
 
 ### Not done
 

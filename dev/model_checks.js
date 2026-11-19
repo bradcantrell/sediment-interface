@@ -55,6 +55,29 @@ module.exports = function ({ app, S, check }) {
     app.run("depoGrid.fill(0); deposited = []; solidMaskDirty = true; restartFlow(false); model.bedChanged()");
   }
 
+  // ---------------------------------------------------------------- grains move like water
+  // The spread must not shake the grains. Its first setting (0.02, 10 frames) made a grain's
+  // step turn 0.133 of its length from one frame to the next, nine times what it does with
+  // no spread (0.015), and the page looked wrong (Brad, 2026-11-18). Measured on a plain
+  // channel, each grain matched to itself, 60 frames. Now 0.023; the limit is 0.05.
+  {
+    const st = S(), savedBed = st.bedPoints, savedObs = st.obstacles;
+    app.setBedPoints([]); app.rebuildUserBedGrid(); app.setObstacles([]);
+    app.run("friction = 0; fricDirty = true; inflowVel = 2.5; depoGrid.fill(0); deposited = []; solidMaskDirty = true; restartFlow(false); initParticles(false); model.bedChanged()");
+    app.setPaused(false);
+    for (let k = 0; k < 150; k++) app.draw();
+    app.run("globalThis.__H = new Map(); globalThis.__T = [0, 0]");
+    for (let k = 0; k < 60; k++) {
+      app.draw();
+      app.run(`for (const p of particles) { const h = __H.get(p) || []; h.push([p.x, p.y]); if (h.length > 3) h.shift(); __H.set(p, h);
+        if (h.length === 3) { const [a, b, c] = h, st = Math.hypot(c[0] - b[0], c[1] - b[1]); if (st < 40) { __T[0] += Math.hypot(c[0] - 2 * b[0] + a[0], c[1] - 2 * b[1] + a[1]); __T[1] += st; } } }`);
+    }
+    const turn = app.run("__T[0] / __T[1]");
+    check(turn < 0.05, "the grains move smoothly with the water", `a grain's step turns ${turn.toFixed(3)} of its length a frame (no spread: 0.015, the first spread: 0.133, limit 0.05)`);
+    app.setObstacles(savedObs); app.setBedPoints(savedBed); app.rebuildUserBedGrid();
+    app.run("solidMaskDirty = true; restartFlow(false)");
+  }
+
   // ---------------------------------------------------------------- friction reaches the physics
   // Friction acts before the pressure solve (2026-11-18), so it cannot take water out of the
   // river. On the sediment it acts through rules.nearBed: the settling and lifting rules see
