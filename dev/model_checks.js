@@ -30,6 +30,31 @@ module.exports = function ({ app, S, check }) {
     check(n > 100 && dx / n > 20, "particles travel downstream (+x)", `${n} followed, mean dx ${(n ? dx / n : 0).toFixed(1)} px in 20 frames`);
   }
 
+  // ---------------------------------------------------------------- sand settles behind an object
+  // The guide says sediment piles up in the slow water behind an object and is scoured beside
+  // it. Grains used to follow their streamlines round an object and almost none got into its
+  // wake (2026-11-18: 0 in the box behind a circle after 1500 frames, 43 after 3000). With the
+  // river's turbulent spreading (rules.spread) they wander into it: 162 after 1500 frames, and
+  // still none on the flanks, where the water squeezes past.
+  {
+    const st = S(), W = st.width, H = st.height, savedBed = st.bedPoints, savedObs = st.obstacles;
+    const c = { x: W * 0.583, y: H * 0.5, d: 90 };
+    app.setBedPoints([]); app.rebuildUserBedGrid();
+    app.setObstacles([{ type: "circle", x: c.x, y: c.y, w: c.d, h: c.d, rotation: 0, clips: [{ start: 0, dur: Infinity }] }]);
+    app.run("friction = 0; fricDirty = true; inflowVel = 2.5; depoGrid.fill(0); deposited = []; solidMaskDirty = true; restartFlow(false); initParticles(false); model.bedChanged()");
+    app.setPaused(false);
+    for (let k = 0; k < 1500; k++) app.draw();
+    const box = (x0, x1, y0, y1) => app.run(`(() => { let a = 0; for (let j = 0; j < GH; j++) for (let i = 0; i < GW; i++) { const x = (i + 0.5) * DEPO_CELL, y = (j + 0.5) * DEPO_CELL;
+      if (x >= ${x0} && x < ${x1} && y >= ${y0} && y < ${y1}) a += depoGrid[j * GW + i]; } return a; })()`);
+    const r = c.d / 2;
+    const lee = box(c.x + r, c.x + r + 155, c.y - 60, c.y + 60);
+    const flanks = box(c.x - r - 15, c.x + r + 15, c.y - r - 95, c.y - r - 5) + box(c.x - r - 15, c.x + r + 15, c.y + r + 5, c.y + r + 95);
+    check(lee > 60 && flanks < 0.2 * lee, "sand settles in the slow water behind an object, and not beside it",
+      `after 1500 frames: ${lee.toFixed(0)} behind the circle, ${flanks.toFixed(0)} on its flanks (grains without the spread: 0 behind it)`);
+    app.setObstacles(savedObs); app.setBedPoints(savedBed); app.rebuildUserBedGrid();
+    app.run("depoGrid.fill(0); deposited = []; solidMaskDirty = true; restartFlow(false); model.bedChanged()");
+  }
+
   // ---------------------------------------------------------------- friction reaches the physics
   // Friction acts before the pressure solve (2026-11-18), so it cannot take water out of the
   // river. On the sediment it acts through rules.nearBed: the settling and lifting rules see
@@ -383,12 +408,14 @@ module.exports = function ({ app, S, check }) {
       check(Math.abs(late[0] / late[1] - 1) < 0.02 && spread(downL, late[1]) < 0.03,
         "MAC: a spilling dam settles to passing all the inflow over its crest",
         `after 1500 more steps: spill ${late[0].toFixed(1)} of an inflow of ${late[1].toFixed(1)}, head over the crest ${late[2].toFixed(3)} (weir law ${((late[1] / (app.run("WEIR_C") * pond[1])) ** (2 / 3)).toFixed(3)}); discharge behind ${downL.map(q => q.toFixed(1)).join(", ")}`);
-      // Grains go over a spilling crest instead of bouncing off it.
-      const g = app.run(`(() => { const pass = model.passable; if (!pass) return null;
+      // Grains go over a spilling crest instead of bouncing off it. One grain, one frame: the
+      // turbulent spread is switched off for it, since one random step can outweigh a frame's
+      // drift.
+      const g = app.run(`(() => { const pass = model.passable; if (!pass) return null; const e0 = SPREAD_E; SPREAD_E = 0;
         let c = -1; for (let k = 0; k < pass.length; k++) if (pass[k]) { c = k; break; }
         const W = NX + 2, i = c % W, j = (c - i) / W, x = (i + 0.5) * cellW, y = (j + 0.5) * cellH;
         const keepP = particles; particles = [{ x, y, vx: 0, vy: 0, born: simTime }];
-        updateParticles(); const p = particles[0]; particles = keepP;
+        updateParticles(); const p = particles[0]; particles = keepP; SPREAD_E = e0;
         return [x, y, p ? p.x : null, p ? p.y : null, getVelocityAt(x, y).vx]; })()`);
       check(g && g[2] !== null && g[2] > g[0] && Math.abs(g[3] - g[1]) < 2 && g[4] > 0,
         "MAC: grains cross a spilling crest with the water",

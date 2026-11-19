@@ -875,6 +875,21 @@ function settleParticle(p, bedHere) {
   addDeposit(p.x, p.y, amt);   // raise the bed where sediment settles
 }
 
+// The eddy velocity of rules.spread: each frame it keeps SPREAD_KEEP of itself and gets a
+// kick. A stationary AR(1) step v has variance sv^2, and the sum of its steps grows in
+// variance by sv^2 (1 + a) / (1 - a) a frame, so sv = sigma sqrt((1 - a) / (1 + a)) spreads as
+// a fresh step of sigma each frame would, and the kick that keeps v at sv is sqrt(1 - a^2).
+const SPREAD_FRAMES = 10;
+const SPREAD_KEEP = Math.exp(-1 / SPREAD_FRAMES);
+const SPREAD_KEEP_SCALE = Math.sqrt((1 - SPREAD_KEEP) / (1 + SPREAD_KEEP));
+const SPREAD_KICK = Math.sqrt(1 - SPREAD_KEEP * SPREAD_KEEP);
+
+// A standard normal number from p5's random(), so a seeded run repeats (Box-Muller).
+function gaussRandom() {
+  let a = random(); if (a < 1e-12) a = 1e-12;
+  return Math.sqrt(-2 * Math.log(a)) * Math.cos(2 * Math.PI * random());
+}
+
 function updateParticles() {
   // The model's sediment rules (see MODEL EXTENSION POINT), under the names this code uses.
   const R = model.rules;
@@ -924,6 +939,26 @@ function updateParticles() {
     // inflow 2.5 (32× over CFL) the literal speed teleports. ×4 keeps ~8 px/frame.
     p.x += p.vx * DT * 4;
     p.y += p.vy * DT * 4;
+    // Turbulent spreading: a model may give the grains a random walk of sigma px a frame
+    // (rules.spread, the river's transverse mixing). It is carried as an eddy velocity that
+    // lasts about SPREAD_FRAMES frames (an Ornstein-Uhlenbeck process), scaled so that over
+    // longer times it spreads the grains exactly as far as a fresh step each frame would. A
+    // fresh step each frame drew every streak as a zigzag. Reflected at the banks and at the
+    // inflow edge, so it never carries a grain out through them (only the flow takes a grain
+    // out, through the outflow). Unreflected, it pushed grains just in from the inflow back
+    // out, and over a drawn bed 40% fewer settled.
+    if (R.spread) {
+      const sg = R.spread(p);
+      if (sg > 0) {
+        const sv = sg * SPREAD_KEEP_SCALE;
+        p.tx = (p.tx || 0) * SPREAD_KEEP + sv * SPREAD_KICK * gaussRandom();
+        p.ty = (p.ty || 0) * SPREAD_KEEP + sv * SPREAD_KICK * gaussRandom();
+        let nx = p.x + p.tx, ny = p.y + p.ty;
+        if (nx < 0) { nx = -nx; p.tx = -p.tx; }
+        if (ny < 0) { ny = -ny; p.ty = -p.ty; } else if (ny > height) { ny = 2 * height - ny; p.ty = -p.ty; }
+        p.x = nx; p.y = ny;
+      }
+    }
 
 
 
@@ -2849,6 +2884,8 @@ function updateTimelineVisibility() {
 //     particleLost(p) {}              // a grain left the canvas or aged out without settling
 //                                     // (or the particles were reset); a model that takes sand
 //                                     // from the bed for its grains puts it back here
+//     rules.spread(p)                 // sigma (px a frame) of a random walk added to a grain's
+//                                     // step: turbulent spreading (default none)
 //     rules.nearBed(x, y)             // factor on the speed the settling and lifting rules
 //                                     // compare with their thresholds (default 1)
 //     passable                        // null, or a flow-grid array: 1 where water crosses an

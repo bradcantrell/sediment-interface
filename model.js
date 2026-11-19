@@ -784,6 +784,22 @@ function velocityStep() {
 // raised by the factor 1 + f (friction 1 doubles it). The grains still move with the
 // depth-mean flow, so the supply coming down the reach stays the same. (Slowing the grains
 // themselves was tried: fewer arrived, and the deposit fell as friction rose.)
+// Turbulent spreading of the grains. A river mixes across its width at a rate
+// eps = E u* h, E about 0.15 in a straight channel and up to 0.6 or more around bends and
+// obstacles (Fischer et al. 1979, Mixing in Inland and Coastal Waters), u* the shear velocity,
+// about 0.06 of the mean speed. Taken as a constant over the reach, eps = SPREAD_E U h with U
+// the inflow speed and h the 2 m depth: a rate that varied with the local speed would need a
+// drift term, or the walk would pile grains into slow water by itself. Each frame a grain moves
+// U * MAC_ADV cells, so its random step has sigma = sqrt(2 SPREAD_E h U MAC_ADV) cells, h in
+// cells. Without it a grain followed its streamline and almost none got into the slow water
+// behind an object.
+let SPREAD_E = 0.02;
+function spread(p) {
+  if (!(SPREAD_E > 0) || !(inflowVel > 0)) return 0;
+  const hCells = WATER_DEPTH_M / (12.8 / (NX + 2));     // the export's 12.8 m reach over the grid
+  return Math.sqrt(2 * SPREAD_E * hCells * inflowVel * MAC_ADV) * cellW;
+}
+
 function nearBed(x, y) {
   let f = friction + frictionAt(x, y);
   return f > 0 ? Math.pow(1 + f, -0.6) : 1;
@@ -942,6 +958,7 @@ registerModel({
     minTravelX: MIN_TRAVEL_X, minAge: MIN_PARTICLE_AGE, maxAge: MAX_PARTICLE_AGE,
     bedSettleOnBed: BED_SETTLE_ON_BED,
     nearBed,
+    spread,
   },
   spawnParticle, respawnParticle,
 

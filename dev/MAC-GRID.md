@@ -297,6 +297,38 @@ default stays 0.5 m above the water, and the coast's groynes work the same way.
   39% at -0.6 m, all of it buried, and 23% with a 1 m surge over a +0.5 m crest. The XBeach
   export raises structures to their crests (it raised every one to 3 m above the water).
 
+### Sand behind objects (2026-11-18)
+
+The guide says sediment piles up in the slow water behind an object. Neither solver did it.
+The staggered solver's wake is slow, but the grains followed their streamlines round the
+object and almost none got into it.
+
+The river now gives the grains turbulent spreading (`rules.spread`, new optional interface
+hook). It is a transverse mixing rate eps = SPREAD_E U h, with SPREAD_E = 0.02, about a third
+of u* h (Fischer et al. 1979 give 0.15 u* h in a straight channel and 0.6 or more around
+obstacles). The rate is held constant over the reach, since one varying with the local speed
+would pile grains into slow water by itself. The interface carries it as an eddy velocity
+lasting about 10 frames, and the walk reflects at the banks and the inflow edge.
+
+3000 steps, inflow 2.5, in the scene of the retune above.
+
+| | Before | Now |
+|---|---|---|
+| Deposit behind the circle | 15 | 265 |
+| On its flanks | 0 | 0 |
+| No-bed scene, total | 1597 | 4612 (the collocated solver: 6322) |
+| Drawn bed, friction 0 | 6224 | 3783 |
+| Drawn bed, friction 3 | 69169 | 50373 |
+
+Over a drawn bed a third less settles, and that third is the mixing keeping sand up.
+Counted over 1500 frames, settling and lifting both fell by 43%, and more grains aged out
+before they settled. The bank deposit rose (490 to 640), because grains the walk takes to a
+bank are reflected and kept, where before the flow's own noise lost some through it.
+
+The new check, "sand settles in the slow water behind an object, and not beside it", fails
+with `SPREAD_E = 0` (0 behind the circle after 1500 frames). The crest check now follows its
+one grain with the spread off, since one random step can outweigh a frame's drift.
+
 ### Not done
 
 - The dam is a rigid lid with a storage term. The pond's level is one number. The water
