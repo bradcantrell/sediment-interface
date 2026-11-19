@@ -1076,6 +1076,27 @@ try {
         `on at start ${onAtStart}, ${r.line.length === 0 ? '' : ''}streaks ${matched}/${after.length} matched, longest ${longest.toFixed(1)} px, ` +
         `dots when off ${dotsOk}, kept in the scene ${kept}`);
 
+  // The drawn bed's colour ramp (relief) is off at the start and the toggle turns it on, and
+  // the choice is saved (Brad, 2026-11-18: over a drawn slope it made the scene hard to read).
+  // A model that draws its own bed (the coast) always shows it, and the button is hidden.
+  {
+    const own = app.run("!!model.renderBed");
+    app.run("globalThis.__img = 0; globalThis.__image0 = image; image = function (b, ...a) { if (b === bedSurface) __img++; return __image0(b, ...a); }");
+    const count = () => { app.run("__img = 0"); app.draw(); return app.run("__img"); };
+    const offAtStart = app.run("showRelief") === false, nOff = count();
+    el("toggle-relief").dispatchEvent({ type: "click" });
+    const nOn = count(), on = app.run("showRelief") === true;
+    const sv = app.run("captureScene()");
+    el("toggle-relief").dispatchEvent({ type: "click" });
+    app.run("applySavedScene")(sv);
+    const keptOn = app.run("showRelief") === true;
+    app.run("showRelief = false; refreshToggles(); image = __image0");
+    const hidden = el("toggle-relief").style.display === "none";
+    check(offAtStart && on && keptOn && nOn > 0 && (own ? (nOff > 0 && hidden) : (nOff === 0 && !hidden)),
+          "the bed's relief shading is off by default, the toggle shows it, and the choice is saved",
+          `off at start ${offAtStart}; bed drawn ${nOff} times off, ${nOn} on; saved ${keptOn}; ${own ? "the model draws its own bed, button hidden " + hidden : "button shown"}`);
+  }
+
   // Resizing stretches the scene with the canvas, so a save after a resize comes back in the
   // same place on a canvas of the first size. Before, objects stayed put through the resize
   // and the save recorded the new size with the old positions.

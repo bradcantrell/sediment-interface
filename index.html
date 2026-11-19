@@ -308,6 +308,7 @@
       <button id="toggle-pause" class="tg-off">pause</button>
       <button id="toggle-elev" class="tg-off">elev</button>
       <button id="toggle-streak" class="tg-on">streak</button>
+      <button id="toggle-relief" class="tg-off">relief</button>
       <span id="model-toggles" style="display:contents"></span>
       <button id="toggle-3d" class="tg-off">3d</button>
     </div>
@@ -444,6 +445,10 @@ let showHelp = true;
 let showElev = false;
 // Grains drawn as streaks along their path (on) or as dots with a fading trail (off).
 let showStreaks = true;
+// The drawn bed's colour ramp and contours. Off by default (Brad, 2026-11-18): over a drawn
+// slope the ramp was strong enough to make the scene hard to read. The bed acts on the flow
+// either way; a model that draws its own bed (renderBed, the coast) always shows it.
+let showRelief = false;
 // Elevation display cycles on repeated presses:
 //   1 grid  2 grid + subdivisions  3 local highs (within 3 cells)  4 local lows  0 off
 let elevMode = 0;
@@ -1857,6 +1862,7 @@ function setup() {
     updateTools();
     document.getElementById('toggle-elev').className=showElev?'tg-on':'tg-off';
     document.getElementById('toggle-streak').className=showStreaks?'tg-on':'tg-off';
+    document.getElementById('toggle-relief').className=showRelief?'tg-on':'tg-off';
   }
   document.getElementById('toggle-grid').addEventListener('click',function(){showGrid=!showGrid;updateToggles();});
   document.getElementById('toggle-flow').addEventListener('click',function(){showFlow=!showFlow;updateToggles();});
@@ -1884,6 +1890,7 @@ function setup() {
   wireTools();
   document.getElementById('toggle-elev').addEventListener('click',function(){elevMode=(elevMode+1)%5;showElev=elevMode>0;updateToggles();});
   document.getElementById('toggle-streak').addEventListener('click',function(){showStreaks=!showStreaks;trailBuffer.clear();updateToggles();});
+  document.getElementById('toggle-relief').addEventListener('click',function(){showRelief=!showRelief;this.blur();updateToggles();});
   updateToggles();
   guide.refreshToggles = updateToggles;   // the guide starts and stops the run, so it redraws these too
 
@@ -1962,10 +1969,10 @@ function draw() {
   push(); applyView();
   image(depoBuffer, 0, 0);
 
-  // Bed surface — behind trails so trails paint over it
-  // Always composite the height gradient: when drawing a transect the underlay is exactly
-  // what shows the elevation the particles are reacting to, and hiding it left bed mode blind.
-  image(bedSurface, 0, 0);
+  // Bed surface, behind the trails so they paint over it. The drawn bed's ramp shows only with
+  // relief on (it used to show always, and over a drawn slope it swamped the scene); the bed
+  // editor's strips and elev still show heights with it off. A model's own bed always shows.
+  if (showRelief || model.renderBed) image(bedSurface, 0, 0);
   if (model.drawUnderlay) model.drawUnderlay();
   pop();
 
@@ -2916,6 +2923,8 @@ function mountModel() {
   const c = model.controls || {};
   if (c.html) document.getElementById('model-controls').innerHTML = c.html;
   if (c.toggles) document.getElementById('model-toggles').innerHTML = c.toggles;
+  // A model that draws its own bed always shows it, so relief has nothing to turn off there.
+  if (model.renderBed) { const rb = document.getElementById('toggle-relief'); if (rb) rb.style.display = 'none'; }
   if (c.stats) document.getElementById('model-stats').innerHTML = c.stats;
   if (model.help) { const h = document.getElementById('help-site'); if (h) h.innerHTML += ' &middot; ' + model.help; }
   // Render defaults: the colours and flow opacity a model looks right in.
@@ -3056,6 +3065,7 @@ const GUIDE_STEPS = [
     `<p><b>grid</b> shows the grid the water is worked out on. <b>flow</b> draws lines that show which way the water is going and how fast. <b>pause</b> stops and starts the run, the same as the space bar.</p>
      <p><b>elev</b> labels the ground with its height. Each click shows something different. First heights on a coarse grid, then on a fine one, then the fifteen highest points, then the fifteen lowest, then nothing. <b>3d</b> makes the 3D view bigger.</p>
      <p><b>streak</b> draws each grain as a short line along the path it just traveled, so you can follow where the sediment is going. Turn it off to see each grain as a dot.</p>
+     <p><b>relief</b>, where a site has it, colours the ground you have drawn by its height, cool where it is low and warm where it is high. It starts off, so the water and the sediment are easier to see. The ground shapes the flow either way.</p>
      <p><b>bed</b> opens the ground editor, which comes next.</p>` },
   { id: 'bed', target: '#toggle-bed', title: 'Shaping the ground', text:
     `<p>The ground under the water is called the bed. <b>bed</b> pauses the run and opens an editor along the bottom of the site. It is a long section, the height of the ground from one end of the site to the other.</p>
@@ -3310,7 +3320,7 @@ function captureScene() {
     // always-on clip is written as 'inf'.
     obstacles: obstacles.map(o => Object.assign({}, o, o.clips ? { clips: o.clips.map(c => Object.assign({}, c, { dur: c.dur === Infinity ? 'inf' : c.dur })) } : {})),
     bedPoints, bedXSections, controls,
-    view: { showFlow, showGrid, showStreaks, elevMode, timelineEnabled, timelinePingPong, thumbAngleX, thumbAngleY,
+    view: { showFlow, showGrid, showStreaks, showRelief, elevMode, timelineEnabled, timelinePingPong, thumbAngleX, thumbAngleY,
             model: model.viewState ? model.viewState() : undefined },
   };
 }
@@ -3399,6 +3409,7 @@ function applySavedScene(s) {
   if (typeof vw.showFlow === 'boolean') showFlow = vw.showFlow;
   if (typeof vw.showGrid === 'boolean') showGrid = vw.showGrid;
   if (typeof vw.showStreaks === 'boolean') showStreaks = vw.showStreaks;
+  if (typeof vw.showRelief === 'boolean') showRelief = vw.showRelief;
   if (Number.isInteger(vw.elevMode) && vw.elevMode >= 0 && vw.elevMode < 5) { elevMode = vw.elevMode; showElev = elevMode > 0; }
   if (typeof vw.timelineEnabled === 'boolean') timelineEnabled = vw.timelineEnabled;
   if (typeof vw.timelinePingPong === 'boolean') timelinePingPong = vw.timelinePingPong;
