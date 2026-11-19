@@ -153,9 +153,9 @@ and the simulation was dead along with every listener attached after the throw.
 
 The harness loads the page the way a browser does (inline script, then `model.js`, then
 `site.js`, one scope), mocks p5 and the DOM, and asserts on model state rather than pixels.
-116 checks:
+117 checks:
 
-- **Interface** (`dev/headless_harness.js`, 76): `setup()` completes, the draw loop advances
+- **Interface** (`dev/headless_harness.js`, 77): `setup()` completes, the draw loop advances
   time, sediment moves, a transect edits the bed, every visible strip is clickable, the bed
   editor works through the real mouse handlers (bed mode restores the pause state, a click
   lands at the elevation under the pointer, drags stop at the range, a signed range goes
