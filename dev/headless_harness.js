@@ -846,15 +846,16 @@ try {
           `${o.length} obstacles, clips ${o[0] ? o[0].clips[0].dur : "-"}/${o[1] ? o[1].clips[0].dur : "-"}, ${b.length} bed points, ${x.length} cross-section, trail fade ${app.run("trailFade")}`);
   }
 
-  // A scene saved in a window twice as wide and half as tall lands on the same cells.
+  // A scene saved in a window twice as wide and half as tall lands in the same places, with
+  // its objects the size and shape they were drawn.
   {
     const sv = JSON.parse(global.__store.get(key())); sv.width = Wc * 2; sv.height = Hc / 2;
     global.__store.set(key(), JSON.stringify(sv));
     wreck(); app.run("applySavedScene(readSavedScene())");
     const o = S().obstacles, b = S().bedPoints, x = app.run("bedXSections");
-    const ok = o[0].x === 150 && o[0].y === 400 && o[0].w === 25 && o[0].h === 140 && o[1].points[2].y === 50 &&
+    const ok = o[0].x === 150 && o[0].y === 400 && o[0].w === 50 && o[0].h === 70 && o[1].points[2].y === 25 &&
                b[1].x === 300 && b[1].z === 55 && x[0].x === b[1].x && x[0].points[1].y === 1000 && x[0].points[1].z === 12;
-    check(ok, "a scene saved at another canvas size is stretched to this one, and elevations are left alone",
+    check(ok, "a scene saved at another canvas size is placed on this one, objects keep their size, elevations are left alone",
           o[0] ? `circle at ${o[0].x},${o[0].y} size ${o[0].w}x${o[0].h}; bed point x ${b[1].x} z ${b[1].z}; cross-section still on its station: ${x[0].x === b[1].x}` : "nothing restored");
   }
 
@@ -1087,14 +1088,15 @@ try {
   const f0 = frac();
   app.run("windowResized()");               // the mock's window is the canvas, so this narrows it by the sidebar
   const f1 = frac(), resized = app.run("width") !== W0;
+  const sizeKept = S().obstacles[0].w === 40 && S().obstacles[0].h === 30;   // a phone turned on its side used to stretch every object
   app.run("saveScene()");
   app.run(`resizeCanvas(${W0}, ${H0})`);
   app.run("applySavedScene")(app.run("readSavedScene()"));
   const f2 = frac();
   const same = (a, b) => a.every((v, k) => Math.abs(v - b[k]) < 1e-6);
-  check(resized && same(f0, f1) && same(f0, f2),
-        "resizing the window stretches the scene with the canvas, and a save after it comes back in the same place",
-        `fractions ${f0.map(v => v.toFixed(3)).join("/")} -> resized ${f1.map(v => v.toFixed(3)).join("/")} -> reloaded ${f2.map(v => v.toFixed(3)).join("/")}`);
+  check(resized && sizeKept && same(f0, f1) && same(f0, f2),
+        "resizing the window moves the scene with the canvas, objects keep their size, and a save after it comes back in the same place",
+        `size kept ${sizeKept}; fractions ${f0.map(v => v.toFixed(3)).join("/")} -> resized ${f1.map(v => v.toFixed(3)).join("/")} -> reloaded ${f2.map(v => v.toFixed(3)).join("/")}`);
   // back to the first size through windowResized(), so the bed grids follow (the mock's window
   // is the canvas, so the window is made one sidebar wider than the canvas wanted)
   app.run(`resizeCanvas(${W0 + 270}, ${H0}); windowResized()`);
@@ -1204,8 +1206,17 @@ try {
     click("tool-delete"); const gone = S().obstacles.length === 0;
     app.run("addDeposit(width / 2, height / 2, 10)"); click("tool-restart"); const cleared = app.run("depoGrid.every(v => v === 0)");
     const p0 = app.run("paused"); click("tool-pause"); const flipped = app.run("paused") !== p0; click("tool-pause");
-    check(rect && turned && gone && cleared && flipped, "the tool bar chooses the shape, turns, deletes, restarts and pauses",
-          `shape ${rect}, turn ${turned}, delete ${gone}, restart ${cleared}, pause ${flipped}`);
+    // Its run button shows a triangle while paused and two bars while running (Brad,
+    // 2026-11-18); every icon is a line drawing in the UI's colour, not a Unicode symbol,
+    // which iOS draws as colour emoji.
+    const icon = (pz) => { app.run(`paused = ${pz}; updateTools()`); const h = el("tool-pause").innerHTML; return /<polygon/.test(h) ? "run" : (/<rect/.test(h) ? "pause" : "?"); };
+    const iconPaused = icon(true), iconRunning = icon(false);
+    app.run(`paused = ${p0}; updateTools()`);
+    const markup = fs.readFileSync(HTML, "utf8"), bar = (markup.match(/<div id="tools"[\s\S]*?<\/div>/) || [""])[0];
+    const svgs = (bar.match(/<button[^>]*>\s*<svg/g) || []).length, glyphs = /[\u2190-\u2BFF\u25A0-\u25FF]/.test(bar);
+    check(rect && turned && gone && cleared && flipped && iconPaused === "run" && iconRunning === "pause" && svgs === 7 && !glyphs,
+          "the tool bar chooses the shape, turns, deletes, restarts and pauses, with a run or pause icon as it should",
+          `shape ${rect}, turn ${turned}, delete ${gone}, restart ${cleared}, pause ${flipped}; paused shows ${iconPaused}, running shows ${iconRunning}; ${svgs} drawn icons, symbols left ${glyphs}`);
     click("tool-circle");
     app.setObstacles(obs0); app.run("solidMaskDirty = true; selectedIdx = -1");
   }

@@ -27,11 +27,15 @@
       border: 1px solid rgba(255,255,255,0.12); border-radius: 4px; user-select: none;
     }
     #tools button {
-      min-width: 38px; height: 34px; font: 13px 'Courier New', monospace; color: rgba(255,255,255,0.75);
+      min-width: 38px; height: 34px; font: 13px 'Courier New', monospace; color: rgba(255,200,100,0.9);
       background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.14); border-radius: 3px;
       touch-action: manipulation; padding: 0 6px;
     }
-    #tools button.on { color: rgba(255,200,100,0.95); border-color: rgba(255,200,100,0.5); }
+    #tools button.on { color: rgba(255,200,100,1); border-color: rgba(255,200,100,0.6); background: rgba(255,200,100,0.12); }
+    /* Line icons in the UI's yellow (they were Unicode symbols, which iOS draws as colour emoji). */
+    #tools svg { width: 18px; height: 18px; display: block; margin: auto; fill: none; stroke: currentColor;
+      stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    #tools svg.fill { fill: currentColor; stroke: none; }
     #tools .sep { width: 1px; background: rgba(255,255,255,0.12); margin: 2px 2px; }
     body.narrow #tools { display: flex; }
     @media (pointer: coarse) { #tools { display: flex; } }
@@ -335,12 +339,12 @@
 </div>
 
 <div id="tools" role="toolbar" aria-label="tools">
-  <button id="tool-circle" title="circle (1)">○</button><button id="tool-rect" title="rectangle (2)">▭</button><button id="tool-poly" title="freeform (3)">⬠</button>
+  <button id="tool-circle" title="circle (1)" aria-label="circle"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.5"/></svg></button><button id="tool-rect" title="rectangle (2)" aria-label="rectangle"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3.5" y="5.5" width="13" height="9"/></svg></button><button id="tool-poly" title="freeform (3)" aria-label="freeform"><svg viewBox="0 0 20 20" aria-hidden="true"><polygon points="10,3.5 16.5,8.2 14,16 6,16 3.5,8.2"/></svg></button>
   <span class="sep"></span>
-  <button id="tool-rotl" title="turn left (shift + wheel)">⟲</button><button id="tool-rotr" title="turn right (shift + wheel)">⟳</button>
-  <button id="tool-delete" title="delete the selected object (backspace)">✕</button>
+  <button id="tool-rotl" title="turn left (shift + wheel)" aria-label="turn left"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.5 7.5 A6 6 0 1 1 4.5 12"/><polyline points="2.8,4.6 5.5,7.6 8.6,5.4"/></svg></button><button id="tool-rotr" title="turn right (shift + wheel)" aria-label="turn right"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M14.5 7.5 A6 6 0 1 0 15.5 12"/><polyline points="17.2,4.6 14.5,7.6 11.4,5.4"/></svg></button>
+  <button id="tool-delete" title="delete the selected object (backspace)" aria-label="delete"><svg viewBox="0 0 20 20" aria-hidden="true"><line x1="5" y1="5" x2="15" y2="15"/><line x1="15" y1="5" x2="5" y2="15"/></svg></button>
   <span class="sep"></span>
-  <button id="tool-pause" title="pause or run (space)">⏯</button><button id="tool-restart" title="restart the sediment (R)">↺</button><button id="tool-unzoom" title="unzoom (0)">1:1</button>
+  <button id="tool-pause" title="pause or run (space)" aria-label="run"></button><button id="tool-restart" title="restart the sediment (R)" aria-label="restart"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 10 A5.5 5.5 0 1 1 13.4 5.7"/><polyline points="11.6,3.2 14.2,5.8 11.4,8.2"/></svg></button><button id="tool-unzoom" title="unzoom (0)" aria-label="unzoom">1:1</button>
 </div>
 <div id="help">1 circle &middot; 2 rect &middot; 3 freeform &middot; click place &middot; drag move &middot; drag handle resize &middot; wheel zoom &middot; middle-drag, Alt-drag or arrows pan &middot; 0 unzoom &middot; shift+wheel rotate &middot; [ ] size &middot; backspace delete &middot; F flow &middot; G grid &middot; H help &middot; M bed &middot; space pause &middot; R restart &middot; S save &middot; ? guide<span id="help-site"></span></div>
 
@@ -2418,9 +2422,20 @@ function deleteSelected() {
   }
   deleteObstacle(selectedIdx); selectedIdx = -1; selectedClip = -1;
 }
+const TOOL_ICON_RUN = '<svg viewBox="0 0 20 20" aria-hidden="true" class="fill"><polygon points="6,4 16,10 6,16"/></svg>';
+const TOOL_ICON_PAUSE = '<svg viewBox="0 0 20 20" aria-hidden="true" class="fill"><rect x="5" y="4" width="3.4" height="12" rx="0.6"/><rect x="11.6" y="4" width="3.4" height="12" rx="0.6"/></svg>';
 function updateTools() {
   for (const t of ['circle', 'rect', 'poly']) { const b = document.getElementById('tool-' + t); if (b && b.classList) b.classList.toggle('on', ghostType === t); }
-  const p = document.getElementById('tool-pause'); if (p && p.classList) p.classList.toggle('on', !!paused);
+  // Run or pause: a triangle while paused (tap to run), two bars while running (tap to pause).
+  const p = document.getElementById('tool-pause');
+  if (p) {
+    const want = paused ? 'run' : 'pause';
+    if (p.dataset.state !== want) {
+      p.dataset.state = want;
+      p.innerHTML = paused ? TOOL_ICON_RUN : TOOL_ICON_PAUSE;
+      if (p.setAttribute) p.setAttribute('aria-label', want);
+    }
+  }
 }
 function wireTools() {
   const on = (id, f) => { const b = document.getElementById(id); if (b && b.addEventListener) b.addEventListener('click', function () { if (!guide.open) f(); this.blur(); updateTools(); }); };
@@ -3318,15 +3333,12 @@ function readSavedScene() {
 // scene is stretched the same way and stays over the same cells. Elevations are not pixels.
 // A cross-section belongs to the transect point with the same x, so both are scaled by the
 // same multiplication and still match exactly.
+// Objects move with the canvas and keep their size and shape (Brad, 2026-11-18: turning a
+// phone from portrait to landscape stretched every object, a circle to twice its width). The
+// drawn bed and its cross-sections are ground, and stretch with it.
 function stretchScene(sx, sy) {
   if (!(isFinite(sx) && isFinite(sy) && sx > 0 && sy > 0) || (sx === 1 && sy === 1)) return;
-  for (const ob of obstacles) {
-    ob.x *= sx; ob.y *= sy;
-    if (ob.w != null) ob.w *= sx;
-    if (ob.h != null) ob.h *= sy;
-    if (ob.size != null) ob.size *= sx;
-    if (ob.points) for (const p of ob.points) { p.x *= sx; p.y *= sy; }
-  }
+  for (const ob of obstacles) { ob.x *= sx; ob.y *= sy; }
   for (const p of bedPoints) p.x *= sx;
   for (const xs of bedXSections) { xs.x *= sx; for (const q of xs.points) q.y *= sy; }
   solidMaskDirty = true;
